@@ -60,11 +60,50 @@ This groups all reports for a song together and tracks mix version progress.
 ## Module Structure
 
 The project follows a modular architecture:
+
+### Core Modules (`/projects/music-analyzer/src/`)
 - `audio_analyzer.py` - Core audio analysis functions
 - `stem_analyzer.py` - Multi-stem clash detection
 - `als_parser.py` - Ableton .als file parsing
 - `mastering.py` - Matchering integration
 - `reporter.py` - Report generation
-- `stem_separator.py` - Spleeter-based stem separation
+- `stem_separator.py` - Spleeter/Demucs-based stem separation
 - `reference_storage.py` - Reference track library
 - `reference_comparator.py` - Mix vs reference comparison
+- `config.py` - Configuration loader and validation
+- `genre_presets.py` - Genre-specific analysis presets
+
+### Specialized Analyzers (`/projects/music-analyzer/src/analyzers/`)
+- `harmonic_analyzer.py` - Key detection, chord analysis
+- `clarity_analyzer.py` - Mix clarity and muddiness detection
+- `spatial_analyzer.py` - Stereo field and spatial depth
+- `overall_score.py` - Composite mix quality scoring
+
+### Music Theory Utilities (`/projects/music-analyzer/src/music_theory/`)
+- `key_relationships.py` - Key signature and chord relationships
+
+## AI Recommendation System
+
+The RecommendationGuide system provides specialized analysis prompts:
+
+### Location: `/docs/ai/RecommendationGuide/`
+- `RecommendationGuide.md` - Master prompt system and priority scoring
+- `PIPELINE.md` - Analysis workflow specification
+- `INDEX.md` - Index of available specialist prompts
+
+### Specialist Prompts (`/docs/ai/RecommendationGuide/prompts/`)
+20+ specialized analysis prompts covering:
+- **Frequency**: LowEnd, FrequencyBalance, FrequencyCollisionDetection
+- **Dynamics**: Dynamics, DynamicsHumanization, GainStaging
+- **Stereo/Spatial**: StereoPhase, StereoFieldAudit, SpatialAnalysis
+- **Arrangement**: Sections, SectionContrast, DensityBusyness, TranceArrangement
+- **Harmonic**: ChordHarmony, HarmonicAnalysis
+- **Quality**: Clarity, OverallScore, Loudness
+- **Reference**: StemReference, DeviceChain
+- **Playback**: PlaybackOptimization, SurroundCompatibility
+
+## Reference Library
+
+Location: `/projects/music-analyzer/reference_library/`
+- `index.json` - Index of stored reference tracks
+- `analytics/` - Cached analysis data for references (auto-generated)

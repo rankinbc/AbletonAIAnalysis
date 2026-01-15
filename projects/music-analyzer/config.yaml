@@ -1,0 +1,474 @@
+# =============================================================================
+# MUSIC ANALYZER CONFIGURATION
+# =============================================================================
+# All analysis thresholds and feature toggles in one place.
+# Modify these values to customize the analysis for your workflow.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# STAGE TOGGLES - Enable/disable analysis stages
+# -----------------------------------------------------------------------------
+# Set to false to skip stages you don't find useful.
+# This speeds up analysis and reduces noise in reports.
+
+stages:
+  # Core stages (recommended to keep enabled)
+  audio_analysis: true          # Main mix analysis (loudness, dynamics, frequency, stereo)
+  section_analysis: true        # Timeline-based issue detection with timestamps
+  clipping_detection: true      # Find clipping with exact timestamps
+
+  # Optional stages
+  stem_separation: false        # AI stem separation (slow, requires spleeter)
+  stem_analysis: true           # Analyze provided stems for clashes/masking
+  reference_comparison: true    # Compare against reference tracks
+  als_parsing: true             # Parse Ableton project files
+
+  # Sub-analyses within audio_analysis
+  dynamics_analysis: true       # Peak, RMS, crest factor, compression
+  frequency_analysis: true      # Spectral balance, problem frequencies
+  stereo_analysis: true         # Phase, width, mono compatibility
+  loudness_analysis: true       # LUFS measurements, platform targets
+  transient_analysis: true      # Punch/attack quality
+  tempo_detection: true         # BPM detection
+
+  # MIDI analysis (within als_parsing)
+  midi_humanization: false      # Score MIDI as robotic/natural (disable if not useful)
+  midi_quantization: false      # Detect off-grid notes
+  midi_chord_detection: false   # Detect chords in MIDI
+
+  # Mastering
+  ai_mastering: false           # Auto-master to match reference (experimental)
+
+  # Extended Analysis (merged from ai-music-mix-analyzer)
+  harmonic_analysis: true       # Key detection and harmonic content
+  clarity_analysis: true        # Spectral clarity metrics
+  spatial_analysis: false       # 3D spatial perception (optional, CPU intensive)
+  surround_analysis: true       # Mono compatibility and phase checks
+  playback_analysis: false      # Headphone/speaker optimization (optional)
+  overall_score: true           # Weighted quality score calculation
+
+# -----------------------------------------------------------------------------
+# REPORT OPTIONS
+# -----------------------------------------------------------------------------
+report:
+  format: "html"                # html, json, text, or all
+  include_visualizations: true  # Frequency charts, timelines in HTML
+  include_recommendations: true # Actionable fix suggestions
+  max_issues_per_category: 20   # Limit issues shown per type
+  timestamp_precision: 2        # Decimal places for timestamps (e.g., 1:23.45)
+
+  # What to include in reports
+  show_platform_loudness: true  # Spotify, Apple Music, YouTube targets
+  show_frequency_bands: true    # Detailed frequency breakdown
+  show_stem_details: true       # Per-stem analysis
+  show_midi_details: false      # MIDI analysis details
+
+# -----------------------------------------------------------------------------
+# CLIPPING DETECTION
+# -----------------------------------------------------------------------------
+clipping:
+  threshold: 0.99               # Normalized peak level (0.0-1.0), 0.99 = -0.09dB
+  group_window_seconds: 0.1     # Group clips within this window as one event
+  max_report_positions: 50      # Max clip timestamps to report (0 = unlimited)
+
+  # Severity classification (by clip count)
+  severity_minor_threshold: 100
+  severity_moderate_threshold: 1000
+
+# -----------------------------------------------------------------------------
+# DYNAMICS ANALYSIS (Trance-optimized)
+# -----------------------------------------------------------------------------
+dynamics:
+  # Crest factor interpretation (peak - RMS in dB)
+  # Higher = more dynamic, lower = more compressed
+  # TRANCE: Typically 8-12dB crest factor for punchy but loud masters
+  crest_very_dynamic_threshold: 15.0    # Above this = very dynamic (lowered for trance)
+  crest_good_threshold: 10.0            # Above this = good dynamics (trance sweet spot)
+  crest_compressed_threshold: 6.0       # Above this = compressed but OK
+  # Below 6.0 = over-compressed
+
+  over_compression_threshold: 6.0       # Warn if crest factor below this
+  target_crest_factor: 10.0             # TRANCE: Punchy but loud (was 12)
+
+# -----------------------------------------------------------------------------
+# FREQUENCY ANALYSIS (Trance-optimized)
+# -----------------------------------------------------------------------------
+frequency:
+  fft_window_size: 4096         # FFT size (larger = more precision, slower)
+
+  # Frequency band definitions (Hz)
+  # These define how energy is categorized
+  bands:
+    sub_bass: [20, 60]
+    bass: [60, 250]
+    low_mid: [250, 500]
+    mid: [500, 2000]
+    high_mid: [2000, 6000]
+    high: [6000, 10000]
+    air: [10000, 20000]           # Shimmer and sparkle (important for trance pads)
+
+  # Balance thresholds (% of total energy)
+  # TRANCE: Can handle more bass, strict on mud
+  bass_excessive_threshold: 50          # TRANCE: Higher tolerance (was 45%)
+  bass_lacking_threshold: 18            # TRANCE: Must have bass presence (was 15%)
+  low_mid_buildup_threshold: 20         # TRANCE: Stricter on mud (was 25%)
+  high_lacking_threshold: 5             # Warn if highs < 5%
+  high_excessive_threshold: 25          # Warn if highs > 25% (harsh)
+
+  # Spectral centroid interpretation (Hz)
+  # Where the "center of mass" of frequencies lies
+  centroid_dark_threshold: 1200         # TRANCE: Slightly higher (was 1000)
+  centroid_bright_threshold: 3500       # TRANCE: Slightly lower (was 4000)
+
+  # Problem frequency detection
+  # TRANCE: Very strict on mud - this kills kick punch
+  muddy_range: [200, 500]               # Hz range to check for mud
+  muddy_ratio_threshold: 0.20           # TRANCE: Stricter (was 0.25)
+  muddy_severe_threshold: 0.35          # TRANCE: Stricter (was 0.4)
+  muddy_moderate_threshold: 0.25        # TRANCE: Stricter (was 0.3)
+
+  harsh_range: [3000, 8000]             # Hz range for harshness
+  harsh_ratio_threshold: 0.35           # Warn if > 35% energy in harsh range
+
+  # TRANCE: Sub-bass is critical for drops
+  sub_bass_range: [20, 60]              # Hz range for sub-bass
+  sub_bass_weak_threshold: 0.08         # TRANCE: Higher requirement (was 0.05)
+  sub_bass_minimum_drops: 0.10          # TRANCE: Drops must have 10%+ sub energy
+
+# -----------------------------------------------------------------------------
+# STEREO / PHASE ANALYSIS (Trance-optimized)
+# -----------------------------------------------------------------------------
+stereo:
+  # Correlation thresholds (-1 to 1)
+  # 1.0 = mono, 0.0 = uncorrelated, -1.0 = out of phase
+  # TRANCE: Wide pads are good, but bass MUST be centered for club play
+  mono_threshold: 0.95                  # Above = essentially mono
+  narrow_threshold: 0.7                 # Above = narrow stereo
+  good_threshold: 0.3                   # Above = good width
+  wide_threshold: 0.0                   # Above = wide (below = phase issues)
+
+  # TRANCE: Stricter mono compatibility - clubs are often mono
+  mono_compatibility_threshold: 0.4     # TRANCE: Stricter (was 0.3)
+
+  # TRANCE: Target width for different elements
+  target_width_pads: 0.3                # Wide pads (correlation ~0.3)
+  target_width_bass: 0.9                # Bass should be nearly mono
+  target_width_kicks: 0.95              # Kicks should be mono
+
+# -----------------------------------------------------------------------------
+# LOUDNESS (LUFS) ANALYSIS (Trance-optimized)
+# -----------------------------------------------------------------------------
+loudness:
+  # Streaming platform targets (integrated LUFS)
+  platforms:
+    spotify: -14.0
+    apple_music: -16.0
+    youtube: -14.0
+    tidal: -14.0
+    amazon: -14.0
+    soundcloud: -14.0
+    # TRANCE: Club master is louder
+    club_master: -8.0                   # TRANCE: Club play target
+    dj_promo: -9.0                      # TRANCE: DJ promo target
+
+  reference_loudness: -14.0             # Default target (Spotify standard)
+
+  # TRANCE: Separate targets for different purposes
+  club_target_lufs: -8.0                # For club play / DJ sets
+  streaming_target_lufs: -14.0          # For Spotify/YouTube release
+
+  # Analysis parameters
+  hop_length_seconds: 0.1
+  frame_length_seconds: 0.4
+  short_term_window_seconds: 3.0
+
+  # Warning thresholds
+  warning_lower_threshold: -6           # Warn if > 6 LUFS below target
+  warning_upper_threshold: 2            # Warn if > 2 LUFS above target
+  true_peak_warning_threshold: -1.0     # Warn if true peak > -1.0 dBTP
+
+  # TRANCE: Additional loudness checks
+  drop_loudness_minimum_lufs: -10.0     # Drops should be loud
+  breakdown_loudness_maximum_lufs: -18.0 # Breakdowns should be quieter
+
+# -----------------------------------------------------------------------------
+# TRANSIENT ANALYSIS (Trance-optimized)
+# -----------------------------------------------------------------------------
+transients:
+  # Attack quality thresholds (0.0-1.0 normalized strength)
+  # TRANCE: Kick punch is critical - stricter thresholds
+  punchy_threshold: 0.65                # TRANCE: Slightly lower (was 0.7) - more achievable
+  average_threshold: 0.45               # TRANCE: Slightly higher (was 0.4)
+  weak_threshold: 0.3                   # TRANCE: Below this = weak kicks
+
+  max_positions_to_store: 20            # Limit stored transient positions
+
+  # TRANCE: Transient density expectations
+  drop_density_minimum: 2.5             # Drops should have high transient density
+  breakdown_density_maximum: 1.5        # Breakdowns are sparser
+
+# -----------------------------------------------------------------------------
+# SECTION ANALYSIS (Trance-optimized)
+# -----------------------------------------------------------------------------
+# This is the core feature for finding issues at specific timestamps
+# TRANCE: Structure is everything - intro→buildup→drop→breakdown→buildup→drop→outro
+sections:
+  min_section_length_seconds: 16.0      # TRANCE: 16 bars at 138bpm ≈ 28s, so 16s minimum
+  fixed_segment_length_seconds: 32.0    # TRANCE: 16-bar segments
+
+  # Section detection algorithm weights
+  # TRANCE: Energy changes are most important for detecting drops/breakdowns
+  detection_weights:
+    rms_energy: 0.6                     # TRANCE: Higher weight on energy (was 0.5)
+    onset_density: 0.25                 # TRANCE: Slightly lower (was 0.3)
+    spectral_centroid: 0.15             # TRANCE: Lower weight (was 0.2)
+
+  novelty_smoothing_window_seconds: 2
+  novelty_threshold_std_multiplier: 0.5
+
+  # Section classification thresholds
+  intro_position_threshold: 0.1         # First 10% = intro
+  outro_position_threshold: 0.9         # Last 10% = outro
+
+  # TRANCE: Drop detection - drops should be LOUD and punchy
+  drop_energy_threshold_db: -12         # TRANCE: Louder (was -15)
+  drop_transient_density_threshold: 2.5 # TRANCE: Higher (was 2.0)
+  drop_bass_ratio_threshold: 0.35       # TRANCE: More bass (was 0.3)
+
+  # TRANCE: Breakdown detection - breakdowns are quiet and sparse
+  breakdown_energy_threshold_db: -25    # TRANCE: Quieter (was -20)
+  breakdown_transient_density_threshold: 1.0  # TRANCE: Lower (was 1.5)
+
+  # Buildup detection
+  buildup_transient_density_threshold: 1.0
+  buildup_energy_increase_threshold: 3.0  # TRANCE: Energy should increase by 3dB
+
+  # Per-section issue thresholds
+  clipping_group_window: 0.1
+  clipping_minor_threshold: 100
+  clipping_severe_threshold: 500
+
+  min_dynamic_range_db: 4               # Warn if section has < 4dB range
+
+  # TRANCE: Drop vs breakdown contrast
+  drop_breakdown_contrast_db: 10        # Drops should be 10dB+ louder than breakdowns
+
+# -----------------------------------------------------------------------------
+# STEM ANALYSIS
+# -----------------------------------------------------------------------------
+stems:
+  fft_size: 4096
+
+  # Frequency band definitions for stems (slightly different from mix)
+  bands:
+    sub: [20, 60]
+    bass: [60, 200]
+    low_mid: [200, 500]
+    mid: [500, 2000]
+    high_mid: [2000, 6000]
+    high: [6000, 16000]
+    air: [16000, 20000]
+
+  # Clash detection
+  clash_overlap_threshold: 0.3          # 30% overlap = potential clash
+  clash_min_overlap_amount: 0.1         # Minimum overlap to report
+  clash_severe_threshold: 0.5           # Overlap amount for severe
+  clash_moderate_threshold: 0.3         # Overlap amount for moderate
+
+  # Balance detection (dB difference from average)
+  balance_too_loud_threshold: 6
+  balance_too_quiet_threshold: 12
+
+  # Masking detection
+  masking_level_diff_threshold: 10      # dB difference for masking
+  masking_freq_overlap_threshold: 0.3
+  masking_loud_energy_threshold: 0.5
+
+  # Panning analysis
+  panning_center_threshold: 0.7         # Above = too center-heavy
+  bass_heavy_energy_threshold: 0.2
+
+# -----------------------------------------------------------------------------
+# REFERENCE COMPARISON
+# -----------------------------------------------------------------------------
+reference:
+  fft_window_size: 4096
+  spectrum_visualization_points: 256
+
+  # Frequency bands for comparison
+  bands:
+    bass: [20, 250]
+    low_mid: [250, 500]
+    mid: [500, 2000]
+    high_mid: [2000, 6000]
+    high: [6000, 20000]
+
+  # Thresholds for generating recommendations
+  loudness_threshold_db: 2.0            # Recommend if > 2dB difference
+  stereo_width_threshold_pct: 15        # Recommend if > 15% difference
+  frequency_threshold_pct: 8            # Recommend if > 8% difference
+  spectral_centroid_threshold_hz: 200   # Recommend if > 200Hz difference
+
+  # Balance score penalties (subtracted from 100)
+  balance_score_loudness_penalty: 2     # Per dB over threshold
+  balance_score_freq_penalty: 10        # Max penalty for freq imbalance
+  balance_score_width_penalty: 5        # Max penalty for width diff
+
+# -----------------------------------------------------------------------------
+# MIDI ANALYSIS (Ableton Project)
+# -----------------------------------------------------------------------------
+midi:
+  # Quantization error detection (in beats)
+  quantization_detection_threshold: 0.01    # Minimum error to detect
+  quantization_severe_threshold: 0.1        # Severe if > 0.1 beats off
+  quantization_notable_threshold: 0.03      # Notable if > 0.03 beats off
+
+  # Humanization scoring (velocity standard deviation)
+  humanization_robotic_std: 5               # Below = robotic
+  humanization_slight_std: 15               # Below = slightly humanized
+  # Above 15 = natural
+
+  # Chord detection
+  chord_time_threshold_beats: 0.05          # Notes within this = chord
+  chord_min_note_count: 3                   # Minimum notes for a chord
+
+  # Swing detection
+  swing_min_note_count: 10
+  swing_offbeat_lower_bound: 0.3
+  swing_offbeat_upper_bound: 0.75
+
+# -----------------------------------------------------------------------------
+# AI MASTERING (Experimental)
+# -----------------------------------------------------------------------------
+mastering:
+  peak_limiting_threshold: 0.99
+  k_weighting_constant: 0.691
+  lufs_estimation_failure_default: -24.0
+
+# -----------------------------------------------------------------------------
+# DEFAULTS / FALLBACKS (Trance-optimized)
+# -----------------------------------------------------------------------------
+defaults:
+  sample_rate_hz: 44100
+  tempo_bpm: 138                        # TRANCE: 138 is the sweet spot (was 140)
+  project_duration_beats: 16
+  genre: "trance"                       # Default genre preset
+
+# -----------------------------------------------------------------------------
+# HARMONIC ANALYSIS (Key Detection)
+# -----------------------------------------------------------------------------
+harmonic:
+  segment_length_sec: 5.0          # Segment length for key consistency analysis
+  segment_overlap: 0.5             # Overlap ratio between segments (0.5 = 50%)
+  min_key_confidence: 0.6          # Below this confidence = "Unknown" key
+
+# -----------------------------------------------------------------------------
+# CLARITY ANALYSIS (Spectral Clarity)
+# -----------------------------------------------------------------------------
+clarity:
+  muddy_flatness_threshold: 0.3    # Flatness above this may indicate mud
+  harsh_centroid_threshold: 4000   # Centroid (Hz) above this may be harsh
+  good_contrast_range: [20, 60]    # Spectral contrast (dB) - ideal range
+
+# -----------------------------------------------------------------------------
+# SPATIAL ANALYSIS (3D Perception)
+# -----------------------------------------------------------------------------
+spatial:
+  good_height_range: [30, 70]      # Height score ideal range
+  good_depth_range: [30, 70]       # Depth score ideal range
+  width_consistency_threshold: 70  # Below this = unstable stereo image
+
+# -----------------------------------------------------------------------------
+# SURROUND COMPATIBILITY (Trance-optimized)
+# -----------------------------------------------------------------------------
+surround:
+  # TRANCE: Stricter mono compatibility - club systems are often mono
+  mono_safe_threshold: 75          # TRANCE: Stricter (was 70)
+  phase_safe_threshold: 65         # TRANCE: Stricter (was 60)
+
+  # TRANCE: Bass must translate to mono
+  bass_mono_threshold: 0.85        # Bass correlation must be > 0.85
+
+# -----------------------------------------------------------------------------
+# PLAYBACK OPTIMIZATION
+# -----------------------------------------------------------------------------
+playback:
+  headphone_crossfeed_factor: 0.4  # Crossfeed amount for headphone simulation
+  speaker_bass_threshold: 100      # Hz - bass management threshold
+
+# -----------------------------------------------------------------------------
+# OVERALL SCORE WEIGHTS (Trance-optimized)
+# -----------------------------------------------------------------------------
+overall_score:
+  # TRANCE: Prioritize bass, punch, and loudness over harmony
+  weights:
+    frequency_balance: 0.25        # TRANCE: 25% - bass/sub is critical (was 20%)
+    dynamics: 0.15                 # 15% - dynamic range (punch vs loudness)
+    stereo: 0.12                   # TRANCE: 12% - width matters but less than bass (was 15%)
+    loudness: 0.15                 # TRANCE: 15% - club-ready loudness (was 10%)
+    clarity: 0.12                  # TRANCE: 12% - lead cut-through (was 15%)
+    harmonic: 0.06                 # TRANCE: 6% - less important for trance (was 10%)
+    transients: 0.10               # TRANCE: 10% - kick punch is key
+    surround: 0.05                 # 5% - mono compatibility for clubs
+
+# -----------------------------------------------------------------------------
+# GENRE PRESETS
+# -----------------------------------------------------------------------------
+# Use with: python analyze.py --song MySong --preset trance
+# The values above are already trance-optimized, but here are explicit presets
+
+presets:
+  trance:
+    # This is the DEFAULT - values above are already optimized for trance
+    dynamics:
+      target_crest_factor: 10
+      over_compression_threshold: 6
+    frequency:
+      bass_excessive_threshold: 50
+      low_mid_buildup_threshold: 20
+      sub_bass_minimum_drops: 0.10
+    stereo:
+      mono_compatibility_threshold: 0.4
+    sections:
+      drop_energy_threshold_db: -12
+      breakdown_energy_threshold_db: -25
+    loudness:
+      club_target_lufs: -8
+      streaming_target_lufs: -14
+
+  uplifting_trance:
+    # More dynamic, euphoric
+    dynamics:
+      target_crest_factor: 11
+    sections:
+      breakdown_energy_threshold_db: -28    # Deeper breakdowns
+      drop_breakdown_contrast_db: 12        # More contrast
+
+  tech_trance:
+    # Harder, more compressed
+    dynamics:
+      target_crest_factor: 9
+      over_compression_threshold: 5
+    frequency:
+      bass_excessive_threshold: 55          # More bass tolerance
+    transients:
+      punchy_threshold: 0.7                 # Need more punch
+
+  progressive_trance:
+    # Longer builds, less extreme
+    dynamics:
+      target_crest_factor: 12
+    sections:
+      min_section_length_seconds: 24        # Longer sections
+      drop_energy_threshold_db: -14
+      breakdown_energy_threshold_db: -22
+
+  psytrance:
+    # Fast, rolling basslines
+    defaults:
+      tempo_bpm: 145
+    dynamics:
+      target_crest_factor: 9
+    frequency:
+      bass_excessive_threshold: 55
+      sub_bass_minimum_drops: 0.12          # More sub required

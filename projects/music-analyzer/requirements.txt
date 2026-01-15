@@ -1,0 +1,36 @@
+# AI Music Production Analysis Tool - Dependencies
+# Python 3.8+ required
+
+# Audio Analysis
+librosa>=0.10.0
+soundfile>=0.12.0
+pydub>=0.25.0
+scipy>=1.10.0
+numpy>=1.24.0
+
+# Professional Loudness Measurement
+pyloudnorm>=0.1.0
+
+# AI Mastering
+matchering>=2.0.0
+
+# Stem Separation (Meta's Demucs - better quality than Spleeter)
+demucs>=4.0.0
+
+# Ableton Project Parsing
+# Note: pyableton has limited support, we'll use gzip+xml parsing as backup
+lxml>=4.9.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# CLI & Utilities
+click>=8.1.0
+colorama>=0.4.6
+tqdm>=4.65.0
+
+# Report Generation
+jinja2>=3.1.0
+
+# Audio format support (for pydub)
+# Note: Install ffmpeg separately on your system

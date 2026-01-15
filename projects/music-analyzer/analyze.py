@@ -1,0 +1,888 @@
+#!/usr/bin/env python3
+"""
+Ableton AI Analysis - Music Production Analysis Tool
+
+CLI tool for analyzing Ableton 11 projects and audio files.
+
+Usage:
+    python analyze.py --audio mix.wav
+    python analyze.py --stems ./stems/
+    python analyze.py --als project.als --stems ./stems/
+    python analyze.py --audio mix.wav --reference ref.wav --master
+"""
+
+import sys
+import os
+import shutil
+from pathlib import Path
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+import click
+from colorama import init, Fore, Style
+from tqdm import tqdm
+
+# Initialize colorama for Windows support
+init()
+
+# Import our modules
+from audio_analyzer import AudioAnalyzer
+from stem_analyzer import StemAnalyzer
+from als_parser import ALSParser
+from mastering import MasteringEngine
+from reporter import ReportGenerator
+from stem_separator import StemSeparator
+from reference_comparator import ReferenceComparator
+from reference_storage import ReferenceStorage
+from config import load_config, get_config
+
+
+def print_header():
+    """Print the application header."""
+    print(f"""
+{Fore.CYAN}================================================================
+         {Fore.WHITE}ABLETON AI ANALYSIS{Fore.CYAN}
+         {Fore.YELLOW}Music Production Analysis Tool{Fore.CYAN}
+================================================================{Style.RESET_ALL}
+""")
+
+
+def print_section(title: str):
+    """Print a section header."""
+    print(f"\n{Fore.GREEN}>> {title}{Style.RESET_ALL}")
+    print("-" * 50)
+
+
+def print_issue(severity: str, message: str):
+    """Print an issue with appropriate formatting."""
+    if severity == 'critical':
+        print(f"  {Fore.RED}[X] CRITICAL: {message}{Style.RESET_ALL}")
+    elif severity == 'warning':
+        print(f"  {Fore.YELLOW}[!] Warning: {message}{Style.RESET_ALL}")
+    else:
+        print(f"  {Fore.BLUE}[i] Info: {message}{Style.RESET_ALL}")
+
+
+def print_recommendation(num: int, text: str):
+    """Print a numbered recommendation."""
+    print(f"  {Fore.GREEN}{num}.{Style.RESET_ALL} {text}")
+
+
+def detect_song_structure(song_name: str, inputs_dir: str = "./inputs"):
+    """
+    Detect files from standard /inputs/<songname>/ structure.
+
+    Returns dict with paths to: audio, stems, als, reference, version
+    """
+    inputs_path = Path(inputs_dir)
+    song_path = inputs_path / song_name
+
+    if not song_path.exists():
+        return None
+
+    result = {
+        'audio': None,
+        'stems': None,
+        'als': None,
+        'reference': None,
+        'version': 'v1',
+        'song_path': str(song_path)
+    }
+
+    # Detect mix version (find latest version folder in mix/)
+    mix_dir = song_path / 'mix'
+    if mix_dir.exists():
+        version_dirs = sorted([d for d in mix_dir.iterdir() if d.is_dir() and d.name.startswith('v')],
+                              key=lambda x: int(x.name[1:]) if x.name[1:].isdigit() else 0,
+                              reverse=True)
+        if version_dirs:
+            latest_version = version_dirs[0]
+            result['version'] = latest_version.name
+            # Find mix file in version folder
+            for ext in ['*.flac', '*.wav', '*.FLAC', '*.WAV']:
+                mix_files = list(latest_version.glob(ext))
+                if mix_files:
+                    result['audio'] = str(mix_files[0])
+                    break
+
+    # Detect stems directory
+    stems_dir = song_path / 'stems'
+    if stems_dir.exists() and any(stems_dir.glob('*.wav')) or any(stems_dir.glob('*.flac')):
+        result['stems'] = str(stems_dir)
+
+    # Detect ALS file
+    als_files = list(song_path.glob('*.als'))
+    if als_files:
+        result['als'] = str(als_files[0])
+
+    # Detect reference tracks
+    refs_dir = song_path / 'references'
+    if refs_dir.exists():
+        for ext in ['*.flac', '*.wav', '*.FLAC', '*.WAV']:
+            ref_files = list(refs_dir.glob(ext))
+            if ref_files:
+                result['reference'] = str(ref_files[0])
+                break
+
+    return result
+
+
+@click.command()
+@click.option('--audio', '-a', type=click.Path(exists=True),
+              help='Path to audio file (WAV/FLAC) to analyze')
+@click.option('--stems', '-s', type=click.Path(exists=True),
+              help='Path to directory containing stem files')
+@click.option('--als', type=click.Path(exists=True),
+              help='Path to Ableton .als project file')
+@click.option('--reference', '-r', type=click.Path(exists=True),
+              help='Reference track for mastering comparison')
+@click.option('--master', '-m', is_flag=True,
+              help='Apply AI mastering to the audio file')
+@click.option('--output', '-o', default='./reports',
+              help='Output directory for reports and mastered files')
+@click.option('--format', 'output_format', type=click.Choice(['html', 'text', 'json']),
+              default='html', help='Report output format')
+@click.option('--verbose', '-v', is_flag=True,
+              help='Enable verbose output')
+@click.option('--separate', type=click.Path(exists=True),
+              help='Separate audio file into stems (vocals, drums, bass, other)')
+@click.option('--compare-ref', 'compare_ref', type=click.Path(exists=True),
+              help='Compare mix against reference track stem-by-stem')
+@click.option('--add-reference', 'add_reference', type=click.Path(exists=True),
+              help='Add a track to the reference library')
+@click.option('--reference-id', 'reference_id', type=str,
+              help='Use stored reference by ID (faster than file comparison)')
+@click.option('--list-references', 'list_references', is_flag=True,
+              help='List all stored reference tracks')
+@click.option('--genre', type=str,
+              help='Genre tag when adding reference (e.g., trance, house)')
+@click.option('--tags', type=str,
+              help='Comma-separated tags when adding reference')
+@click.option('--song', type=str,
+              help='Song name in /inputs/<song>/ standard structure (auto-detects files)')
+@click.option('--version', 'mix_version', type=str, default=None,
+              help='Mix version to analyze (e.g., v1, v2). Auto-detects latest if not specified.')
+@click.option('--config', 'config_path', type=click.Path(exists=True),
+              help='Path to custom config.yaml file')
+@click.option('--no-sections', 'no_sections', is_flag=True,
+              help='Skip section/timeline analysis')
+@click.option('--no-stems', 'no_stems', is_flag=True,
+              help='Skip stem analysis even if stems provided')
+@click.option('--no-midi', 'no_midi', is_flag=True,
+              help='Skip MIDI analysis from ALS file')
+@click.option('--ai-recommend', 'ai_recommend', is_flag=True,
+              help='After analysis, launch Claude with recommendations (requires claude CLI)')
+@click.option('--genre-preset', 'genre_preset', type=click.Choice(['trance', 'house', 'techno', 'dnb', 'progressive']),
+              help='Use genre-specific target values for analysis')
+def main(audio, stems, als, reference, master, output, output_format, verbose,
+         separate, compare_ref, add_reference, reference_id, list_references, genre, tags,
+         song, mix_version, config_path, no_sections, no_stems, no_midi, ai_recommend, genre_preset):
+    """
+    Analyze Ableton projects and audio files for mixing issues.
+
+    Examples:
+
+    \b
+    Analyze from standard input structure (recommended):
+        python analyze.py --song MySong
+        python analyze.py --song MySong --version v1
+
+    \b
+    Analyze a single mixdown:
+        python analyze.py --audio my_mix.wav
+
+    \b
+    Analyze stems for frequency clashes:
+        python analyze.py --stems ./exported_stems/
+
+    \b
+    Full analysis with project file:
+        python analyze.py --als my_song.als --stems ./stems/ --audio my_mix.wav
+
+    \b
+    Analyze and master:
+        python analyze.py --audio my_mix.wav --reference pro_track.wav --master
+
+    \b
+    Separate a mix into stems:
+        python analyze.py --separate my_mix.wav
+
+    \b
+    Compare your mix against a reference track:
+        python analyze.py --audio my_mix.wav --compare-ref pro_track.wav
+
+    \b
+    Add a reference track to library:
+        python analyze.py --add-reference pro_track.wav --genre trance --tags "anthem,uplifting"
+
+    \b
+    List stored reference tracks:
+        python analyze.py --list-references
+    """
+    print_header()
+
+    # Load configuration
+    cfg = load_config(config_path)
+
+    # Apply CLI overrides to stage config
+    if no_sections:
+        cfg._config['stages']['section_analysis'] = False
+    if no_stems:
+        cfg._config['stages']['stem_analysis'] = False
+    if no_midi:
+        cfg._config['stages']['midi_humanization'] = False
+        cfg._config['stages']['midi_quantization'] = False
+        cfg._config['stages']['midi_chord_detection'] = False
+
+    if verbose:
+        print(f"{Fore.CYAN}Configuration loaded{Style.RESET_ALL}")
+        if config_path:
+            print(f"  Config file: {config_path}")
+        disabled = [k for k, v in cfg.stages.items() if not v]
+        if disabled:
+            print(f"  Disabled stages: {', '.join(disabled)}")
+        print()
+
+    # Handle list-references first (doesn't need other inputs)
+    if list_references:
+        print_section("Reference Library")
+        storage = ReferenceStorage(verbose=verbose)
+        refs = storage.list_references()
+
+        if not refs:
+            print(f"  {Fore.YELLOW}No reference tracks in library{Style.RESET_ALL}")
+            print(f"  Add with: python analyze.py --add-reference track.wav --genre trance")
+        else:
+            print(f"  Found {len(refs)} reference track(s):\n")
+            for ref in refs:
+                genre_str = f" [{ref.genre}]" if ref.genre else ""
+                tempo_str = f" {ref.tempo_bpm:.0f}BPM" if ref.tempo_bpm else ""
+                tags_str = f" tags: {', '.join(ref.tags)}" if ref.tags else ""
+                print(f"  {Fore.CYAN}{ref.track_id}{Style.RESET_ALL}: {ref.file_name}{genre_str}{tempo_str}")
+                if tags_str:
+                    print(f"      {tags_str}")
+
+            # Print stats
+            stats = storage.get_library_stats()
+            print(f"\n  {Fore.GREEN}Library Stats:{Style.RESET_ALL}")
+            print(f"    Tracks: {stats['track_count']}")
+            if stats['genres']:
+                print(f"    Genres: {', '.join(f'{k}({v})' for k, v in stats['genres'].items())}")
+            if stats['tempo_range']:
+                print(f"    Tempo Range: {stats['tempo_range'][0]:.0f}-{stats['tempo_range'][1]:.0f} BPM")
+        return
+
+    # Handle add-reference
+    if add_reference:
+        print_section("Adding Reference Track")
+        storage = ReferenceStorage(verbose=verbose)
+
+        metadata = {}
+        if genre:
+            metadata['genre'] = genre
+        if tags:
+            metadata['tags'] = [t.strip() for t in tags.split(',')]
+
+        try:
+            print(f"  Adding: {Path(add_reference).name}")
+            analytics = storage.add_reference(add_reference, metadata=metadata)
+
+            print(f"\n  {Fore.GREEN}[OK] Reference added successfully{Style.RESET_ALL}")
+            print(f"  ID: {analytics.metadata.track_id}")
+            print(f"  Tempo: {analytics.metadata.tempo_bpm:.1f} BPM" if analytics.metadata.tempo_bpm else "")
+            print(f"  Duration: {analytics.metadata.duration_seconds:.1f}s")
+            print(f"\n  Use with: python analyze.py --audio mix.wav --reference-id {analytics.metadata.track_id}")
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] {e}{Style.RESET_ALL}")
+        return
+
+    # Handle --song flag (auto-detect from standard structure)
+    detected_version = mix_version or 'v1'
+    if song:
+        print_section(f"Detecting Song Structure: {song}")
+        # Look for inputs directory relative to script location or current directory
+        script_dir = Path(__file__).parent.parent.parent  # Go up to project root
+        inputs_dir = script_dir / 'inputs'
+
+        song_info = detect_song_structure(song, str(inputs_dir))
+
+        if song_info is None:
+            click.echo(f"{Fore.RED}Error: Song '{song}' not found in {inputs_dir}{Style.RESET_ALL}")
+            click.echo(f"Expected structure: {inputs_dir}/{song}/")
+            sys.exit(1)
+
+        # Override version if specified
+        if mix_version:
+            # Check if specified version exists
+            version_dir = Path(song_info['song_path']) / 'mix' / mix_version
+            if version_dir.exists():
+                detected_version = mix_version
+                # Find mix file in specified version folder
+                for ext in ['*.flac', '*.wav', '*.FLAC', '*.WAV']:
+                    mix_files = list(version_dir.glob(ext))
+                    if mix_files:
+                        song_info['audio'] = str(mix_files[0])
+                        break
+            else:
+                click.echo(f"{Fore.YELLOW}Warning: Version {mix_version} not found, using {song_info['version']}{Style.RESET_ALL}")
+                detected_version = song_info['version']
+        else:
+            detected_version = song_info['version']
+
+        # Populate variables from detected structure (don't override if already specified)
+        if not audio and song_info['audio']:
+            audio = song_info['audio']
+        if not stems and song_info['stems']:
+            stems = song_info['stems']
+        if not als and song_info['als']:
+            als = song_info['als']
+        if not reference and song_info['reference']:
+            reference = song_info['reference']
+
+        # Report what was detected
+        print(f"  Song: {song}")
+        print(f"  Version: {detected_version}")
+        print(f"  Mix: {Path(audio).name if audio else 'Not found'}")
+        print(f"  Stems: {'Found' if stems else 'Not found'}")
+        print(f"  ALS: {Path(als).name if als else 'Not found'}")
+        print(f"  Reference: {Path(reference).name if reference else 'Not found'}")
+
+    # Validate inputs
+    if not any([audio, stems, als, separate, compare_ref, song]):
+        click.echo(f"{Fore.RED}Error: Please provide at least one of: --song, --audio, --stems, --als, --separate, or --compare-ref{Style.RESET_ALL}")
+        click.echo("Run 'python analyze.py --help' for usage information.")
+        sys.exit(1)
+
+    if master and not reference:
+        click.echo(f"{Fore.RED}Error: --master requires --reference to be specified{Style.RESET_ALL}")
+        sys.exit(1)
+
+    if master and not audio:
+        click.echo(f"{Fore.RED}Error: --master requires --audio to be specified{Style.RESET_ALL}")
+        sys.exit(1)
+
+    if compare_ref and not audio:
+        click.echo(f"{Fore.RED}Error: --compare-ref requires --audio to be specified{Style.RESET_ALL}")
+        sys.exit(1)
+
+    # Create output directory
+    output_path = Path(output)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Initialize results
+    audio_result = None
+    stem_result = None
+    als_result = None
+    mastering_result = None
+    comparison_result = None
+    section_result = None
+
+    # Handle stem separation
+    if separate:
+        print_section("Separating Stems")
+        try:
+            separator = StemSeparator(cache_dir=str(output_path / "cache" / "stems"), verbose=verbose)
+            print(f"  Source: {Path(separate).name}")
+            print(f"  Model: spleeter:4stems")
+            print(f"\n  {Fore.YELLOW}Separating (this may take 30-60 seconds)...{Style.RESET_ALL}")
+
+            def progress_cb(progress):
+                if progress.stage == 'cached':
+                    print(f"  {Fore.GREEN}[CACHED] Using previously separated stems{Style.RESET_ALL}")
+                elif progress.stage == 'complete':
+                    print(f"  {Fore.GREEN}[OK] Separation complete{Style.RESET_ALL}")
+
+            sep_result = separator.separate(separate, progress_callback=progress_cb)
+
+            if sep_result.success:
+                print(f"\n  Stems saved to: {sep_result.output_dir}")
+                for stem_type, stem_info in sep_result.stems.items():
+                    print(f"    - {stem_type.value}.wav ({stem_info.rms_db:.1f} dB RMS)")
+
+                if sep_result.cached:
+                    print(f"\n  {Fore.CYAN}(Retrieved from cache in {sep_result.separation_time_seconds:.1f}s){Style.RESET_ALL}")
+                else:
+                    print(f"\n  {Fore.CYAN}(Separated in {sep_result.separation_time_seconds:.1f}s){Style.RESET_ALL}")
+            else:
+                print(f"  {Fore.RED}[ERROR] {sep_result.error_message}{Style.RESET_ALL}")
+
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Stem separation failed: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+
+    # Handle reference comparison
+    if compare_ref and audio and cfg.stage_enabled('reference_comparison'):
+        print_section("Reference Track Comparison")
+        try:
+            comparator = ReferenceComparator(
+                cache_dir=str(output_path / "cache" / "stems"),
+                library_dir=str(output_path.parent / "reference_library"),
+                verbose=verbose
+            )
+
+            print(f"  Your Mix: {Path(audio).name}")
+            print(f"  Reference: {Path(compare_ref).name}")
+            print(f"\n  {Fore.YELLOW}Separating and analyzing stems...{Style.RESET_ALL}")
+
+            def comp_progress_cb(progress):
+                if progress.stage == 'separating_user':
+                    print(f"  Separating your mix...")
+                elif progress.stage == 'separating_reference':
+                    print(f"  Separating reference track...")
+                elif progress.stage == 'analyzing':
+                    print(f"  Comparing stems...")
+                elif progress.stage == 'complete':
+                    print(f"  {Fore.GREEN}[OK] Comparison complete{Style.RESET_ALL}")
+
+            comparison_result = comparator.compare(audio, compare_ref, progress_callback=comp_progress_cb)
+
+            if comparison_result.success:
+                print(f"\n  {Fore.CYAN}=== STEM-BY-STEM COMPARISON ==={Style.RESET_ALL}\n")
+
+                for stem_name, comp in comparison_result.stem_comparisons.items():
+                    severity_color = {
+                        'good': Fore.GREEN,
+                        'minor': Fore.BLUE,
+                        'moderate': Fore.YELLOW,
+                        'significant': Fore.RED
+                    }.get(comp.severity, Fore.WHITE)
+
+                    print(f"  {Fore.WHITE}{stem_name.upper()}:{Style.RESET_ALL} {severity_color}[{comp.severity.upper()}]{Style.RESET_ALL}")
+                    print(f"    Level: {comp.user_rms_db:.1f} dB (ref: {comp.ref_rms_db:.1f} dB) -> {comp.rms_diff_db:+.1f} dB")
+                    print(f"    Width: {comp.user_stereo_width_pct:.0f}% (ref: {comp.ref_stereo_width_pct:.0f}%)")
+
+                    if comp.recommendations:
+                        for rec in comp.recommendations[:2]:
+                            print(f"    {Fore.YELLOW}> {rec}{Style.RESET_ALL}")
+                    print()
+
+                print(f"  {Fore.CYAN}Overall Balance Score: {comparison_result.overall_balance_score:.0f}/100{Style.RESET_ALL}")
+
+                if comparison_result.priority_recommendations:
+                    print(f"\n  {Fore.GREEN}Priority Actions:{Style.RESET_ALL}")
+                    for i, rec in enumerate(comparison_result.priority_recommendations[:5], 1):
+                        print(f"    {i}. {rec}")
+
+                if comparison_result.reference_id:
+                    print(f"\n  {Fore.CYAN}Reference stored (ID: {comparison_result.reference_id}){Style.RESET_ALL}")
+            else:
+                print(f"  {Fore.RED}[ERROR] {comparison_result.error_message}{Style.RESET_ALL}")
+
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Reference comparison failed: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+
+    # Parse ALS file
+    if als and cfg.stage_enabled('als_parsing'):
+        print_section("Parsing Ableton Project")
+        try:
+            parser = ALSParser(verbose=verbose)
+            als_result = parser.parse(als)
+
+            print(f"  Project: {Path(als).name}")
+            print(f"  Tempo: {als_result.tempo:.1f} BPM", end="")
+
+            # Show tempo automation status
+            if als_result.project_structure and als_result.project_structure.has_tempo_changes:
+                print(f" {Fore.YELLOW}(with tempo automation){Style.RESET_ALL}")
+            else:
+                print(" (constant)")
+
+            print(f"  Time Signature: {als_result.time_signature_numerator}/{als_result.time_signature_denominator}")
+
+            # Track breakdown
+            midi_tracks = len([t for t in als_result.tracks if t.track_type == 'midi'])
+            audio_tracks = len([t for t in als_result.tracks if t.track_type == 'audio'])
+            print(f"  Tracks: {len(als_result.tracks)} ({midi_tracks} MIDI, {audio_tracks} Audio)")
+            print(f"  MIDI Notes: {als_result.midi_note_count:,}")
+            print(f"  Audio Clips: {als_result.audio_clip_count}")
+
+            if als_result.plugin_list:
+                print(f"  Plugins: {', '.join(als_result.plugin_list[:5])}")
+                if len(als_result.plugin_list) > 5:
+                    print(f"           ...and {len(als_result.plugin_list) - 5} more")
+
+            # MIDI Analysis Summary
+            if als_result.midi_analysis:
+                print(f"\n  {Fore.CYAN}MIDI Analysis:{Style.RESET_ALL}")
+                humanized = sum(1 for a in als_result.midi_analysis.values()
+                              if a.humanization_score in ('slightly_humanized', 'natural'))
+                total_midi = len(als_result.midi_analysis)
+                print(f"    Humanized Tracks: {humanized}/{total_midi} ({100*humanized//total_midi if total_midi else 0}%)")
+                print(f"    Off-Grid Notes: {als_result.quantization_issues_count}")
+                print(f"    Detected Chords: {als_result.total_chord_count}")
+
+                # Show robotic tracks as warnings
+                robotic_tracks = [name for name, a in als_result.midi_analysis.items()
+                                 if a.humanization_score == 'robotic']
+                if robotic_tracks:
+                    print(f"\n  {Fore.YELLOW}MIDI Issues:{Style.RESET_ALL}")
+                    for track in robotic_tracks[:5]:
+                        analysis = als_result.midi_analysis[track]
+                        print(f"    {Fore.YELLOW}[!]{Style.RESET_ALL} {track}: ROBOTIC (vel std={analysis.velocity_std})")
+                    if len(robotic_tracks) > 5:
+                        print(f"        ...and {len(robotic_tracks) - 5} more")
+
+                # Show severe quantization errors
+                severe_errors = []
+                for name, analysis in als_result.midi_analysis.items():
+                    for err in analysis.quantization_errors:
+                        if err.severity == 'severe':
+                            severe_errors.append((name, err))
+
+                if severe_errors:
+                    print(f"\n    {Fore.RED}Severe Off-Grid Notes:{Style.RESET_ALL}")
+                    for track_name, err in severe_errors[:5]:
+                        note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+                        note_name = note_names[err.pitch % 12]
+                        octave = err.pitch // 12 - 1
+                        print(f"      {track_name}: {note_name}{octave} at beat {err.time:.2f} (off by {err.error_beats:.3f})")
+                    if len(severe_errors) > 5:
+                        print(f"      ...and {len(severe_errors) - 5} more")
+
+            # Project Structure
+            if als_result.project_structure:
+                struct = als_result.project_structure
+
+                if struct.locators:
+                    print(f"\n  {Fore.CYAN}Song Structure:{Style.RESET_ALL}")
+                    markers = " -> ".join(f"{l.name} ({l.time:.0f})" for l in struct.locators[:6])
+                    print(f"    Markers: {markers}")
+                    if len(struct.locators) > 6:
+                        print(f"             ...and {len(struct.locators) - 6} more")
+
+                if struct.scenes:
+                    print(f"    Scenes: {len(struct.scenes)}")
+
+                if struct.tempo_automation and len(struct.tempo_automation) > 1:
+                    print(f"    Tempo Changes: {len(struct.tempo_automation)} points")
+                    for tc in struct.tempo_automation[:3]:
+                        print(f"      Beat {tc.time:.1f}: {tc.tempo:.1f} BPM")
+                    if len(struct.tempo_automation) > 3:
+                        print(f"      ...and {len(struct.tempo_automation) - 3} more")
+
+            print(f"\n  {Fore.GREEN}[OK] Project parsed successfully{Style.RESET_ALL}")
+
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Error parsing ALS file: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+
+    # Analyze single audio file
+    if audio and cfg.stage_enabled('audio_analysis'):
+        print_section("Analyzing Audio Mix")
+        try:
+            analyzer = AudioAnalyzer(verbose=verbose, config=cfg)
+            reference_tempo = als_result.tempo if als_result else None
+
+            print(f"  Analyzing: {Path(audio).name}")
+            audio_result = analyzer.analyze(
+                audio,
+                reference_tempo=reference_tempo,
+                genre_preset=genre_preset
+            )
+
+            # Display results
+            print(f"\n  Duration: {audio_result.duration_seconds:.1f}s")
+            print(f"  Sample Rate: {audio_result.sample_rate} Hz")
+            print(f"  Channels: {'Stereo' if audio_result.channels == 2 else 'Mono'}")
+
+            if audio_result.detected_tempo:
+                print(f"  Detected Tempo: {audio_result.detected_tempo:.1f} BPM")
+
+            # Print issues
+            if audio_result.overall_issues:
+                print(f"\n  {Fore.YELLOW}Issues Found:{Style.RESET_ALL}")
+                for issue in audio_result.overall_issues:
+                    print_issue(issue.get('severity', 'info'), issue['message'])
+            else:
+                print(f"\n  {Fore.GREEN}[OK] No significant issues detected{Style.RESET_ALL}")
+
+            # Print key metrics
+            print(f"\n  {Fore.CYAN}Key Metrics:{Style.RESET_ALL}")
+            print(f"    Peak: {audio_result.dynamics.peak_db:.1f} dBFS")
+            print(f"    RMS: {audio_result.dynamics.rms_db:.1f} dBFS")
+            print(f"    Dynamic Range: {audio_result.dynamics.dynamic_range_db:.1f} dB")
+            print(f"    Est. LUFS: {audio_result.loudness.integrated_lufs:.1f}")
+
+            if audio_result.stereo.is_stereo:
+                print(f"    Stereo Width: {audio_result.stereo.width_estimate:.0f}%")
+
+            # Display genre comparison if available
+            if audio_result.genre_comparison:
+                print(f"\n  {Fore.CYAN}Genre Comparison ({audio_result.genre_preset.upper()}):{Style.RESET_ALL}")
+                for param, result in audio_result.genre_comparison.items():
+                    status = result['status']
+                    if status == 'ok':
+                        color = Fore.GREEN
+                        icon = '[OK]'
+                    elif status == 'warning':
+                        color = Fore.YELLOW
+                        icon = '[!]'
+                    else:
+                        color = Fore.RED
+                        icon = '[X]'
+                    print(f"    {color}{icon}{Style.RESET_ALL} {param}: {result['message']}")
+
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Error analyzing audio: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+
+    # Analyze stems
+    if stems and cfg.stage_enabled('stem_analysis'):
+        print_section("Analyzing Stems")
+        try:
+            stems_path = Path(stems)
+            stem_files = []
+
+            # Find audio files in stems directory
+            for ext in ['*.wav', '*.WAV', '*.flac', '*.FLAC', '*.aiff', '*.AIFF']:
+                stem_files.extend(stems_path.glob(ext))
+
+            if not stem_files:
+                print(f"  {Fore.YELLOW}No audio files found in {stems}{Style.RESET_ALL}")
+            else:
+                print(f"  Found {len(stem_files)} stems:")
+                for sf in stem_files[:10]:
+                    print(f"    - {sf.name}")
+                if len(stem_files) > 10:
+                    print(f"    ...and {len(stem_files) - 10} more")
+
+                stem_analyzer = StemAnalyzer(config=cfg)
+                stem_result = stem_analyzer.analyze_stems(
+                    [str(f) for f in stem_files]
+                )
+
+                # Print clash analysis
+                if stem_result.clashes:
+                    print(f"\n  {Fore.YELLOW}Frequency Clashes Found:{Style.RESET_ALL}")
+                    for clash in stem_result.clashes:
+                        severity_color = {
+                            'severe': Fore.RED,
+                            'moderate': Fore.YELLOW,
+                            'minor': Fore.BLUE
+                        }.get(clash.severity, Fore.WHITE)
+
+                        print(f"    {severity_color}[{clash.severity.upper()}]{Style.RESET_ALL} "
+                              f"{clash.stem1} vs {clash.stem2}")
+                        print(f"      Range: {clash.frequency_range[0]:.0f}-{clash.frequency_range[1]:.0f} Hz")
+                        print(f"      Fix: {clash.recommendation}")
+                else:
+                    print(f"\n  {Fore.GREEN}[OK] No significant frequency clashes{Style.RESET_ALL}")
+
+                # Print balance issues
+                if stem_result.balance_issues:
+                    print(f"\n  {Fore.YELLOW}Balance Issues:{Style.RESET_ALL}")
+                    for issue in stem_result.balance_issues:
+                        print(f"    [!] {issue['message']}")
+
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Error analyzing stems: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+
+    # Mastering
+    if master and audio and reference and cfg.stage_enabled('ai_mastering'):
+        print_section("AI Mastering")
+        try:
+            engine = MasteringEngine(output_dir=output)
+            print(f"  Target: {Path(audio).name}")
+            print(f"  Reference: {Path(reference).name}")
+            print(f"  Processing...")
+
+            mastering_result = engine.master(audio, reference)
+
+            if mastering_result.success:
+                print(f"\n  {Fore.GREEN}[OK] Mastering complete{Style.RESET_ALL}")
+                print(f"  Output: {mastering_result.output_path}")
+
+                if mastering_result.before_lufs and mastering_result.after_lufs:
+                    change = mastering_result.after_lufs - mastering_result.before_lufs
+                    print(f"\n  Loudness Change: {change:+.1f} LUFS")
+                    print(f"    Before: {mastering_result.before_lufs:.1f} LUFS")
+                    print(f"    After: {mastering_result.after_lufs:.1f} LUFS")
+                    print(f"    Reference: {mastering_result.reference_lufs:.1f} LUFS")
+            else:
+                print(f"\n  {Fore.RED}[ERROR] Mastering failed: {mastering_result.error_message}{Style.RESET_ALL}")
+
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Error during mastering: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+
+    # Generate report
+    print_section("Generating Report")
+    try:
+        reporter = ReportGenerator(output_dir=output)
+        # Use song name if provided, otherwise derive from als/audio filename
+        project_name = song if song else (Path(als).stem if als else (Path(audio).stem if audio else "analysis"))
+
+        report_path = reporter.generate_full_report(
+            audio_analysis=audio_result,
+            stem_analysis=stem_result,
+            als_project=als_result,
+            mastering_result=mastering_result,
+            comparison_result=comparison_result,
+            project_name=project_name,
+            output_format=output_format,
+            version=detected_version
+        )
+
+        print(f"  {Fore.GREEN}[OK] Report saved to: {report_path}{Style.RESET_ALL}")
+
+        # Copy input files to output folder
+        report_dir = Path(report_path).parent
+        copied_files = []
+
+        # Copy the mix/audio file
+        if audio:
+            audio_path = Path(audio)
+            # Name format: mix_<original_name>
+            dest_name = f"mix_{audio_path.name}"
+            dest_path = report_dir / dest_name
+            try:
+                shutil.copy2(audio_path, dest_path)
+                copied_files.append(('Mix', dest_name))
+            except Exception as copy_err:
+                if verbose:
+                    print(f"  {Fore.YELLOW}Warning: Could not copy mix file: {copy_err}{Style.RESET_ALL}")
+
+        # Copy the reference file (from --reference or --compare-ref)
+        ref_file = reference or compare_ref
+        if ref_file:
+            ref_path = Path(ref_file)
+            # Name format: reference_<original_name>
+            dest_name = f"reference_{ref_path.name}"
+            dest_path = report_dir / dest_name
+            try:
+                shutil.copy2(ref_path, dest_path)
+                copied_files.append(('Reference', dest_name))
+            except Exception as copy_err:
+                if verbose:
+                    print(f"  {Fore.YELLOW}Warning: Could not copy reference file: {copy_err}{Style.RESET_ALL}")
+
+        if copied_files:
+            print(f"\n  {Fore.CYAN}Audio files copied to output:{Style.RESET_ALL}")
+            for file_type, file_name in copied_files:
+                print(f"    {file_type}: {file_name}")
+
+    except Exception as e:
+        print(f"  {Fore.RED}[ERROR] Error generating report: {e}{Style.RESET_ALL}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+
+    # Print recommendations summary
+    all_recommendations = []
+    if audio_result:
+        all_recommendations.extend(audio_result.recommendations)
+    if stem_result:
+        all_recommendations.extend(stem_result.recommendations)
+    if comparison_result and comparison_result.success:
+        all_recommendations.extend(comparison_result.priority_recommendations[:5])
+
+    if all_recommendations:
+        print_section("Recommendations Summary")
+        for i, rec in enumerate(all_recommendations[:10], 1):
+            print_recommendation(i, rec)
+        if len(all_recommendations) > 10:
+            print(f"\n  ...and {len(all_recommendations) - 10} more in the full report")
+
+    # Final summary
+    date_str = __import__('datetime').datetime.now().strftime("%Y-%m-%d")
+    report_base = f"{output}/{project_name}/{project_name}_{detected_version}_analysis_{date_str}"
+    json_report_path = f"{report_base}.json"
+
+    print(f"""
+{Fore.CYAN}==============================================================={Style.RESET_ALL}
+{Fore.GREEN}Analysis Complete!{Style.RESET_ALL}
+
+Report: {report_base}.{output_format}
+""")
+
+    if mastering_result and mastering_result.success:
+        print(f"Mastered: {mastering_result.output_path}")
+
+    # Next step: AI-powered recommendations
+    prompts_dir = "C:\\claude-workspace\\AbletonAIAnalysis\\docs\\ai\\RecommendationGuide\\prompts"
+
+    print(f"""
+{Fore.CYAN}==============================================================={Style.RESET_ALL}
+{Fore.YELLOW}NEXT STEP: Get AI-Powered Recommendations{Style.RESET_ALL}
+
+Your analysis JSON: {json_report_path}
+
+{Fore.WHITE}Run specialist analyses (recommended order):{Style.RESET_ALL}
+
+  {Fore.GREEN}1. Low End{Style.RESET_ALL} (kick/bass relationship, sub-bass, sidechain)
+     claude --add-file "{prompts_dir}\\LowEnd.md" --add-file "{json_report_path}"
+
+  {Fore.GREEN}2. Frequency Balance{Style.RESET_ALL} (EQ, muddy/harsh frequencies, clashes)
+     claude --add-file "{prompts_dir}\\FrequencyBalance.md" --add-file "{json_report_path}"
+
+  {Fore.GREEN}3. Dynamics{Style.RESET_ALL} (compression, transients, punch)
+     claude --add-file "{prompts_dir}\\Dynamics.md" --add-file "{json_report_path}"
+
+  {Fore.GREEN}4. Stereo & Phase{Style.RESET_ALL} (width, mono compatibility, phase)
+     claude --add-file "{prompts_dir}\\StereoPhase.md" --add-file "{json_report_path}"
+
+  {Fore.GREEN}5. Sections{Style.RESET_ALL} (drop impact, transitions, energy flow)
+     claude --add-file "{prompts_dir}\\Sections.md" --add-file "{json_report_path}"
+
+  {Fore.GREEN}6. Loudness{Style.RESET_ALL} (LUFS, true peak, streaming targets)
+     claude --add-file "{prompts_dir}\\Loudness.md" --add-file "{json_report_path}"
+
+{Fore.CYAN}Then ask: "Analyze my mix"{Style.RESET_ALL}
+{Fore.CYAN}==============================================================={Style.RESET_ALL}
+""")
+
+    # AI Recommend: Auto-launch Claude with the analysis
+    if ai_recommend:
+        print(f"\n{Fore.CYAN}>> Launching AI Recommendations{Style.RESET_ALL}")
+        print(f"--------------------------------------------------")
+
+        guide_path = "C:\\claude-workspace\\AbletonAIAnalysis\\docs\\ai\\RecommendationGuide\\RecommendationGuide.md"
+
+        # Build the claude command
+        import subprocess
+        import sys
+
+        try:
+            # Check if claude is available
+            result = subprocess.run(['claude', '--version'], capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"  {Fore.RED}[ERROR] Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code{Style.RESET_ALL}")
+            else:
+                # Launch Claude with the analysis files
+                print(f"  Starting Claude with analysis data...")
+                print(f"  Files: RecommendationGuide.md + {project_name}_analysis.json")
+                print(f"\n  {Fore.YELLOW}Claude will open. Ask: 'Analyze my mix'{Style.RESET_ALL}\n")
+
+                # Use subprocess to launch claude interactively
+                claude_cmd = [
+                    'claude',
+                    '--add-file', guide_path,
+                    '--add-file', json_report_path
+                ]
+
+                # Launch interactively (don't capture output)
+                subprocess.run(claude_cmd)
+
+        except FileNotFoundError:
+            print(f"  {Fore.RED}[ERROR] Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Could not launch Claude: {e}{Style.RESET_ALL}")
+
+
+if __name__ == '__main__':
+    main()

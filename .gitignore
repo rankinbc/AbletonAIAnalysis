@@ -1,0 +1,145 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Audio files (large, don't commit)
+*.wav
+*.mp3
+*.flac
+*.aiff
+*.aif
+*.ogg
+*.m4a
+*.wma
+
+# Ableton project files (large)
+*.als
+*.alp
+*.adg
+*.adv
+*.asd
+
+# Analysis outputs / reports (regeneratable)
+reports/
+*.json
+!config.json
+!package.json
+
+# Model files (large, download separately)
+models/
+*.h5
+*.pkl
+*.onnx
+pretrained_models/
+
+# Spleeter / stem separation outputs
+separated/
+stems_output/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.log
+
+# Reference tracks (user-specific)
+reference_tracks/
+references/
+
+# User-specific config overrides
+config.local.yaml
+.secrets
+
+# Virtual environment indicators
+.python-version
+Pipfile.lock
+poetry.lock
+
+# Claude Code temp files
+tmpclaude-*
+nul
+
+# Misc temp/output
+output/

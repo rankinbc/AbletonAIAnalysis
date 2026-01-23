@@ -35,6 +35,7 @@ from reporter import ReportGenerator
 from stem_separator import StemSeparator
 from reference_comparator import ReferenceComparator
 from reference_storage import ReferenceStorage
+from reference_analyzer import ReferenceAnalyzer
 from config import load_config, get_config
 
 
@@ -149,6 +150,10 @@ def detect_song_structure(song_name: str, inputs_dir: str = "./inputs"):
               help='Separate audio file into stems (vocals, drums, bass, other)')
 @click.option('--compare-ref', 'compare_ref', type=click.Path(exists=True),
               help='Compare mix against reference track stem-by-stem')
+@click.option('--analyze-reference', 'analyze_reference', type=click.Path(exists=True),
+              help='Standalone analysis of a reference track (structure, sections, production targets)')
+@click.option('--deep', 'deep_analysis', is_flag=True,
+              help='Include stem separation in reference analysis (slower but more detailed)')
 @click.option('--add-reference', 'add_reference', type=click.Path(exists=True),
               help='Add a track to the reference library')
 @click.option('--reference-id', 'reference_id', type=str,
@@ -176,7 +181,7 @@ def detect_song_structure(song_name: str, inputs_dir: str = "./inputs"):
 @click.option('--genre-preset', 'genre_preset', type=click.Choice(['trance', 'house', 'techno', 'dnb', 'progressive']),
               help='Use genre-specific target values for analysis')
 def main(audio, stems, als, reference, master, output, output_format, verbose,
-         separate, compare_ref, add_reference, reference_id, list_references, genre, tags,
+         separate, compare_ref, analyze_reference, deep_analysis, add_reference, reference_id, list_references, genre, tags,
          song, mix_version, config_path, no_sections, no_stems, no_midi, ai_recommend, genre_preset):
     """
     Analyze Ableton projects and audio files for mixing issues.
@@ -219,6 +224,11 @@ def main(audio, stems, als, reference, master, output, output_format, verbose,
     \b
     List stored reference tracks:
         python analyze.py --list-references
+
+    \b
+    Standalone reference track analysis (get production targets):
+        python analyze.py --analyze-reference pro_track.wav
+        python analyze.py --analyze-reference pro_track.wav --deep
     """
     print_header()
 
@@ -297,6 +307,96 @@ def main(audio, stems, als, reference, master, output, output_format, verbose,
             print(f"  {Fore.RED}[ERROR] {e}{Style.RESET_ALL}")
         return
 
+    # Handle --analyze-reference (standalone reference analysis)
+    if analyze_reference:
+        print_section("Standalone Reference Analysis")
+        try:
+            analyzer = ReferenceAnalyzer(
+                include_stems=deep_analysis,
+                verbose=verbose,
+                config=cfg
+            )
+
+            print(f"  Analyzing: {Path(analyze_reference).name}")
+            if deep_analysis:
+                print(f"  Mode: Deep analysis (with stem separation)")
+            else:
+                print(f"  Mode: Quick analysis (structure + sections)")
+            print()
+
+            def ref_progress_cb(progress):
+                stage_msgs = {
+                    'structure': 'Detecting song structure...',
+                    'global': 'Computing global metrics...',
+                    'sections': 'Analyzing sections...',
+                    'stems': 'Separating and analyzing stems...',
+                    'targets': 'Generating production targets...',
+                    'summary': 'Creating summary...',
+                    'complete': 'Analysis complete!'
+                }
+                msg = stage_msgs.get(progress.stage, progress.message)
+                print(f"  [{progress.progress_pct:3.0f}%] {msg}")
+
+            result = analyzer.analyze(analyze_reference, progress_callback=ref_progress_cb)
+
+            if result.success:
+                # Display results
+                print(f"\n  {Fore.CYAN}=== TRACK OVERVIEW ==={Style.RESET_ALL}")
+                print(f"  Duration: {result.duration_seconds/60:.1f} min | Tempo: {result.tempo_bpm:.0f} BPM | Key: {result.key or 'Unknown'}")
+                print(f"  LUFS: {result.integrated_lufs:.1f} | Dynamic Range: {result.dynamic_range_db:.1f} dB")
+
+                print(f"\n  {Fore.CYAN}=== SONG STRUCTURE ==={Style.RESET_ALL}")
+                print(f"  Method: {result.structure.detection_method} (confidence: {result.structure.confidence:.0%})")
+                print(f"  Sections: {result.section_count} | Bars: {result.structure.total_bars}")
+                print()
+
+                # Section table
+                print(f"  {'#':<3} {'Section':<12} {'Time':<12} {'Bars':<6} {'RMS (dB)':<10} {'vs Avg':<8}")
+                print(f"  {'-'*3} {'-'*12} {'-'*12} {'-'*6} {'-'*10} {'-'*8}")
+                for i, sm in enumerate(result.section_metrics, 1):
+                    vs_avg = f"{sm.loudness_vs_average_db:+.1f}" if sm.loudness_vs_average_db else "REF"
+                    print(f"  {i:<3} {sm.section_type:<12} {sm.start_time/60:.0f}:{sm.start_time%60:04.1f}-{sm.end_time/60:.0f}:{sm.end_time%60:04.1f}  {sm.duration_bars:<6} {sm.rms_db:<10.1f} {vs_avg:<8}")
+
+                # Production targets
+                print(f"\n  {Fore.CYAN}=== PRODUCTION TARGETS ==={Style.RESET_ALL}")
+                for stype, targets in result.production_targets.by_section_type.items():
+                    print(f"\n  {Fore.WHITE}{stype.upper()}:{Style.RESET_ALL}")
+                    print(f"    Target RMS: {targets['target_rms_db']:.0f} dB")
+                    print(f"    Target Width: {targets['target_stereo_width_pct']:.0f}%")
+                    print(f"    Has Kick: {'Yes' if targets['has_kick'] else 'No'}")
+
+                if result.production_targets.contrasts:
+                    print(f"\n  {Fore.WHITE}CONTRASTS:{Style.RESET_ALL}")
+                    for key, value in result.production_targets.contrasts.items():
+                        label = key.replace('_', ' ').title()
+                        print(f"    {label}: {value:+.1f}")
+
+                # AI summary
+                print(f"\n  {Fore.CYAN}=== KEY INSIGHTS ==={Style.RESET_ALL}")
+                print(f"  {result.ai_summary.get('track_character', '')}")
+                print()
+                for insight in result.ai_summary.get('actionable_insights', []):
+                    print(f"  {Fore.GREEN}>{Style.RESET_ALL} {insight}")
+
+                # Save JSON
+                from datetime import datetime
+                output_dir = Path(output)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                json_filename = f"reference_analysis_{Path(analyze_reference).stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                json_path = output_dir / json_filename
+                result.save(str(json_path))
+                print(f"\n  {Fore.GREEN}[OK] Full analysis saved to: {json_path}{Style.RESET_ALL}")
+
+            else:
+                print(f"  {Fore.RED}[ERROR] {result.error_message}{Style.RESET_ALL}")
+
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Reference analysis failed: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+        return
+
     # Handle --song flag (auto-detect from standard structure)
     detected_version = mix_version or 'v1'
     if song:
@@ -349,8 +449,8 @@ def main(audio, stems, als, reference, master, output, output_format, verbose,
         print(f"  Reference: {Path(reference).name if reference else 'Not found'}")
 
     # Validate inputs
-    if not any([audio, stems, als, separate, compare_ref, song]):
-        click.echo(f"{Fore.RED}Error: Please provide at least one of: --song, --audio, --stems, --als, --separate, or --compare-ref{Style.RESET_ALL}")
+    if not any([audio, stems, als, separate, compare_ref, song, analyze_reference]):
+        click.echo(f"{Fore.RED}Error: Please provide at least one of: --song, --audio, --stems, --als, --separate, --compare-ref, or --analyze-reference{Style.RESET_ALL}")
         click.echo("Run 'python analyze.py --help' for usage information.")
         sys.exit(1)
 

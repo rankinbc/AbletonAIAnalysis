@@ -64,25 +64,29 @@ This document outlines the end-to-end pipeline for analyzing music productions a
                                         ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                        STAGE 3: AI RECOMMENDATION                            │
-│                        (Claude + Specialist Prompts)                         │
+│                        (Claude + Triage → Specialist Prompts)                │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  User runs:                                                                  │
-│  claude --add-file "RecommendationGuide.md" --add-file "analysis.json"      │
+│  Step 1: Run TRIAGE first (always)                                          │
+│  claude --add-file "prompts/Triage.md" --add-file "analysis.json"           │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                    Master Recommendation Guide                        │   │
-│  │  • Detects data types present                                        │   │
-│  │  • Routes to specialist modules                                      │   │
+│  │                         TRIAGE ROUTER                                 │   │
+│  │  • Shows current state snapshot (all metrics)                        │   │
+│  │  • Detects issues across ALL categories                              │   │
 │  │  • Calculates priority scores                                        │   │
-│  │  • Aggregates findings                                               │   │
+│  │  • Routes to specific specialists with focus areas                   │   │
+│  │  • Lists quick wins                                                  │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                        │                                     │
+│                        Triage Output: "Run these specialists..."            │
+│                                        │                                     │
+│  Step 2: Run RECOMMENDED SPECIALISTS                                         │
 │         ┌──────────────────────────────┼──────────────────────────────┐     │
 │         ▼                              ▼                              ▼     │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
-│  │  Loudness   │  │   LowEnd    │  │ StereoPhase │  │  Dynamics   │  ...   │
-│  │ Specialist  │  │ Specialist  │  │ Specialist  │  │ Specialist  │        │
+│  │   LowEnd    │  │  Dynamics   │  │  Sections   │  │    etc.     │        │
+│  │ (if routed) │  │ (if routed) │  │ (if routed) │  │             │        │
 │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘        │
 │                                                                              │
 └───────────────────────────────────────┬─────────────────────────────────────┘
@@ -135,12 +139,13 @@ This document outlines the end-to-end pipeline for analyzing music productions a
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| Master Guide | `RecommendationGuide.md` | Main prompt with priority scoring system |
-| Loudness | `prompts/Loudness.md` | LUFS, true peak, streaming targets |
+| **Triage** | `prompts/Triage.md` | **ENTRY POINT** - Prioritizes all issues, routes to specialists |
+| Master Guide | `RecommendationGuide.md` | Legacy main prompt (still works) |
 | Low End | `prompts/LowEnd.md` | Kick/bass relationship, sub, sidechain |
-| Stereo/Phase | `prompts/StereoPhase.md` | Correlation, mono compatibility, width |
-| Dynamics | `prompts/Dynamics.md` | Crest factor, compression, punch |
 | Frequency | `prompts/FrequencyBalance.md` | Spectral balance, EQ, mud/harshness |
+| Dynamics | `prompts/Dynamics.md` | Crest factor, compression, punch |
+| Stereo/Phase | `prompts/StereoPhase.md` | Correlation, mono compatibility, width |
+| Loudness | `prompts/Loudness.md` | LUFS, true peak, streaming targets |
 | Sections | `prompts/Sections.md` | Drop impact, breakdown energy, transitions |
 | Trance Arrangement | `prompts/TranceArrangement.md` | 8-bar rule, buildup mechanics |
 | Stem Reference | `prompts/StemReference.md` | Stem-by-stem reference comparison |
@@ -179,10 +184,14 @@ This document outlines the end-to-end pipeline for analyzing music productions a
    └── HTML: human-readable, visualizations
    └── Text: console-friendly summary
 
-6. AI ANALYSIS
-   └── Claude reads JSON + specialist prompt
-   └── Applies priority scoring
-   └── Generates actionable recommendations
+6. AI ANALYSIS (Triage-First Workflow)
+   └── Step 1: Run Triage.md
+       └── Scans all JSON fields
+       └── Detects and prioritizes all issues
+       └── Routes to specific specialists
+   └── Step 2: Run recommended specialists
+       └── Each specialist provides deep, actionable fixes
+       └── Focus on areas Triage identified
 ```
 
 ---

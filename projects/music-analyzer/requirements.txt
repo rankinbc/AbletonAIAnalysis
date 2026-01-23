@@ -17,6 +17,9 @@ matchering>=2.0.0
 # Stem Separation (Meta's Demucs - better quality than Spleeter)
 demucs>=4.0.0
 
+# Song Structure Detection (AI-based section/beat detection)
+allin1>=1.0.0
+
 # Ableton Project Parsing
 # Note: pyableton has limited support, we'll use gzip+xml parsing as backup
 lxml>=4.9.0

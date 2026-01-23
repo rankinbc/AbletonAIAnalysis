@@ -4,21 +4,40 @@ This folder contains specialized AI prompts for analyzing music production JSON 
 
 ---
 
-## How to Use
+## Recommended Workflow
 
-1. Run the analyzer to generate a JSON file:
-   ```bash
-   python analyze.py --song MySong
-   ```
+### Step 1: Run the analyzer
+```bash
+python analyze.py --song MySong
+```
 
-2. Open a new Claude Code window with ONE specialist prompt + your JSON:
-   ```bash
-   claude --add-file "docs/ai/RecommendationGuide/prompts/LowEnd.md" --add-file "reports/MySong/MySong_v1_analysis_2026-01-14.json"
-   ```
+### Step 2: Run Triage FIRST (always)
+```bash
+claude --add-file "docs/ai/RecommendationGuide/prompts/Triage.md" --add-file "reports/MySong/MySong_v1_analysis_2026-01-14.json"
+```
 
-3. Ask: "Analyze my mix"
+Ask: "Triage my mix"
 
-4. Repeat with other specialists as needed
+Triage will:
+- Show you the **current state** of your mix (all metrics at a glance)
+- Identify and **prioritize all issues** across every category
+- Tell you **which specialists to run** and what to focus on
+- List **quick wins** you can fix immediately
+
+### Step 3: Run the specialists Triage recommends
+```bash
+claude --add-file "docs/ai/RecommendationGuide/prompts/LowEnd.md" --add-file "reports/MySong/MySong_v1_analysis_2026-01-14.json"
+```
+
+Ask: "Analyze my mix, focusing on [what Triage told you]"
+
+---
+
+## System Entry Point
+
+| Prompt | File | Purpose |
+|--------|------|---------|
+| **Triage** | `prompts/Triage.md` | **START HERE** - Prioritizes all issues, routes to specialists |
 
 ---
 
@@ -71,13 +90,15 @@ This folder contains specialized AI prompts for analyzing music production JSON 
 
 ## Recommended Order
 
-For a complete mix review, run specialists in this order:
+**Always start with Triage.** It will tell you which specialists to run.
 
-1. **Low End** - Foundation must be solid first
-2. **Frequency Balance** - Fix major EQ issues
+If running manually without Triage, use this order:
+
+1. **Stereo & Phase** - Fix phase issues FIRST (everything else is meaningless if phase is broken)
+2. **Low End** - Foundation must be solid
 3. **Dynamics** - Get punch and energy right
-4. **Stereo & Phase** - Ensure mono compatibility
-5. **Sections** - Check arrangement/energy flow
+4. **Sections** - Check arrangement/energy flow
+5. **Frequency Balance** - Fix major EQ issues
 6. **Loudness** - Final loudness optimization
 
 ---
@@ -139,18 +160,28 @@ Each specialist will provide:
 ```
 RecommendationGuide/
 ├── INDEX.md                    # This file
+├── PIPELINE.md                 # System architecture documentation
 ├── RecommendationGuide.md      # General guide (legacy, still works)
 └── prompts/
-    ├── Loudness.md             # Core: Loudness & mastering
+    │
+    │   # ENTRY POINT (Run First)
+    ├── Triage.md               # START HERE - Prioritizes issues, routes to specialists
+    │
+    │   # Core Mix Analysis
     ├── LowEnd.md               # Core: Kick/bass/sub
-    ├── StereoPhase.md          # Core: Stereo & phase
-    ├── Dynamics.md             # Core: Compression & transients
-    ├── Sections.md             # Core: Section arrangement
     ├── FrequencyBalance.md     # Core: EQ & frequency
+    ├── Dynamics.md             # Core: Compression & transients
+    ├── StereoPhase.md          # Core: Stereo & phase
+    ├── Loudness.md             # Core: Loudness & mastering
+    ├── Sections.md             # Core: Section arrangement
+    │
+    │   # Trance-Specific
     ├── TranceArrangement.md    # Trance-specific arrangement
+    │
+    │   # Reference Comparison
     ├── StemReference.md        # Reference track comparison
     │
-    │   # Extended Analysis (NEW)
+    │   # Extended Analysis
     ├── HarmonicAnalysis.md     # Key detection, Camelot, DJ mixing
     ├── ClarityAnalysis.md      # Spectral clarity, masking risk
     ├── SpatialAnalysis.md      # 3D spatial (height, depth, width)

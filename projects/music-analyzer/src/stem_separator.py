@@ -2,13 +2,13 @@
 Stem Separator Module
 
 Separates mixed audio files into individual stems using Demucs:
-- vocals, drums, bass, other (htdemucs model)
+- vocals, drums, bass, other (htdemucs_ft fine-tuned model)
 
 Features:
 - MD5-based caching to avoid re-processing
 - Progress callbacks for UI feedback
 - Support for WAV, MP3, FLAC, and other common formats
-- High-quality AI separation using Meta's Demucs
+- High-quality AI separation using Meta's Demucs (fine-tuned variant)
 """
 
 import hashlib
@@ -88,7 +88,7 @@ class StemSeparator:
     def __init__(
         self,
         cache_dir: str = "./cache/stems",
-        model: str = "htdemucs",
+        model: str = "htdemucs_ft",
         verbose: bool = False
     ):
         """

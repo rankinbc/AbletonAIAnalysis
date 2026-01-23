@@ -18,7 +18,7 @@ stages:
   clipping_detection: true      # Find clipping with exact timestamps
 
   # Optional stages
-  stem_separation: false        # AI stem separation (slow, requires spleeter)
+  stem_separation: false        # AI stem separation (slow, uses Demucs htdemucs_ft model)
   stem_analysis: true           # Analyze provided stems for clashes/masking
   reference_comparison: true    # Compare against reference tracks
   als_parsing: true             # Parse Ableton project files

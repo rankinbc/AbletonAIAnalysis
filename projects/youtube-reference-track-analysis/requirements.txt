@@ -1,0 +1,33 @@
+# YouTube Reference Track Analysis Pipeline
+# Dependencies for analyzing trance music reference tracks
+
+# YouTube downloading
+yt-dlp>=2024.1.0
+
+# Audio analysis - essentia for accurate BPM/key
+# Note: essentia can be tricky to install. Use conda if pip fails:
+#   conda install -c mtgupf essentia
+essentia>=2.1b6
+
+# Beat tracking - madmom for precise beat/downbeat grid
+madmom>=0.16.1
+
+# Stem separation - requires PyTorch
+demucs>=4.0.0
+
+# Audio embeddings - requires PyTorch
+panns-inference>=0.1.0
+
+# Core audio processing (likely already installed from music-analyzer)
+librosa>=0.10.0
+pyloudnorm>=0.1.0
+scipy>=1.10.0
+numpy>=1.24.0
+soundfile>=0.12.0
+
+# CLI framework (already in music-analyzer)
+click>=8.0.0
+rich>=13.0.0
+
+# Progress bars
+tqdm>=4.65.0

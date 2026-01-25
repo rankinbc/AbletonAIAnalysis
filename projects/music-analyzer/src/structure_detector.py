@@ -2,13 +2,14 @@
 Structure Detector Module
 
 Detects song structure (sections, beats, downbeats) using AI-based analysis:
-- Primary: all-in-one deep learning model for joint beat/structure detection
+- Primary: all-in-one deep learning model via Docker (avoids Python 3.13 compatibility issues)
 - Fallback: librosa novelty-based segmentation
 
 Outputs section labels mapped to trance terminology:
 - intro, buildup, drop, breakdown, outro
 """
 
+import sys
 import numpy as np
 import librosa
 from dataclasses import dataclass, field
@@ -16,13 +17,32 @@ from typing import Optional, List, Dict, Callable
 from pathlib import Path
 from enum import Enum
 
-# Check for all-in-one availability
-ALLIN1_AVAILABLE = False
+# Add shared module to path
+_shared_path = Path(__file__).parents[3] / "shared"
+if str(_shared_path) not in sys.path:
+    sys.path.insert(0, str(_shared_path))
+
+# Check for Docker-based allin1 availability
+ALLIN1_DOCKER_AVAILABLE = False
+_docker_allin1 = None
 try:
-    import allin1
-    ALLIN1_AVAILABLE = True
+    from allin1 import DockerAllin1, is_docker_available, is_allin1_image_available
+    if is_docker_available() and is_allin1_image_available():
+        _docker_allin1 = DockerAllin1(enable_cache=False)  # No caching for music-analyzer
+        ALLIN1_DOCKER_AVAILABLE = True
 except ImportError:
     pass
+
+# Legacy: Check for native all-in-one availability (Python < 3.13)
+ALLIN1_NATIVE_AVAILABLE = False
+try:
+    import allin1
+    ALLIN1_NATIVE_AVAILABLE = True
+except ImportError:
+    pass
+
+# Combined availability flag
+ALLIN1_AVAILABLE = ALLIN1_DOCKER_AVAILABLE or ALLIN1_NATIVE_AVAILABLE
 
 
 class SectionType(Enum):
@@ -175,10 +195,13 @@ class StructureDetector:
                 error_message=f"File not found: {audio_path}"
             )
 
-        # Try all-in-one first, fall back to librosa
-        if ALLIN1_AVAILABLE:
+        # Try all-in-one first (Docker preferred), fall back to librosa
+        if ALLIN1_DOCKER_AVAILABLE or ALLIN1_NATIVE_AVAILABLE:
             return self._detect_allin1(audio_path, progress_callback)
         else:
+            if self.verbose:
+                print("allin1 not available (Docker image not built or native not installed)")
+                print("Falling back to librosa novelty-based segmentation")
             return self._detect_librosa(audio_path, progress_callback)
 
     def _detect_allin1(
@@ -196,12 +219,29 @@ class StructureDetector:
             ))
 
         try:
-            # Run all-in-one analysis
-            result = allin1.analyze(
-                audio_path,
-                include_activations=False,
-                include_embeddings=False
-            )
+            # Run all-in-one analysis (Docker or native)
+            if ALLIN1_DOCKER_AVAILABLE and _docker_allin1 is not None:
+                # Use Docker-based allin1 (Python 3.13 compatible)
+                docker_result = _docker_allin1.analyze(audio_path)
+                if docker_result is None:
+                    raise RuntimeError("Docker allin1 analysis failed")
+
+                # Create a result-like object with the same interface
+                class Allin1ResultAdapter:
+                    def __init__(self, r):
+                        self.bpm = r.bpm
+                        self.beats = r.beats
+                        self.downbeats = r.downbeats
+                        self.segments = r.segments
+
+                result = Allin1ResultAdapter(docker_result)
+            else:
+                # Use native allin1 (Python < 3.13)
+                result = allin1.analyze(
+                    audio_path,
+                    include_activations=False,
+                    include_embeddings=False
+                )
 
             if progress_callback:
                 progress_callback(StructureProgress(
@@ -274,9 +314,12 @@ class StructureDetector:
                     message='Structure detection complete'
                 ))
 
+            # Determine which method was used
+            method = 'allin1_docker' if ALLIN1_DOCKER_AVAILABLE else 'allin1_native'
+
             return StructureResult(
                 success=True,
-                detection_method='allin1',
+                detection_method=method,
                 confidence=0.8,
                 tempo_bpm=float(result.bpm) if result.bpm else 0,
                 beats=beats,

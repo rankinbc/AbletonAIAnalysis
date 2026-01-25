@@ -324,6 +324,70 @@ Report: reports/MySong/MySong_v2_analysis_2026-01-15.html
 
 ---
 
+## ALS Doctor - Project Health Analysis (NEW)
+
+Analyze Ableton projects **without exporting audio**. Get instant health scores, detect device chain problems, compare versions, and rank your projects by workability.
+
+### Quick Start
+
+```cmd
+cd C:\claude-workspace\AbletonAIAnalysis
+
+# Quick health check
+als-doctor quick "D:\Ableton Projects\MyProject\project.als"
+
+# Full diagnosis with specific fixes
+als-doctor diagnose "project.als"
+
+# Compare two versions
+als-doctor compare "project_v1.als" "project_v2.als"
+
+# Scan and rank all projects
+als-doctor scan "D:\Ableton Projects" --limit 30
+```
+
+### What It Detects
+
+| Issue | Example |
+|-------|---------|
+| Disabled device clutter | "36% of devices are OFF - delete them" |
+| Wrong effects | "De-esser on hi-hat - remove it" |
+| Bad chain order | "Limiter should be LAST" |
+| Duplicate effects | "3 compressors in series - too many?" |
+| Extreme parameters | "Ratio at infinity:1" |
+| Gain staging issues | "Track at +140 dB" |
+
+### Health Grades
+
+| Grade | Score | Meaning |
+|-------|-------|---------|
+| A | 80-100 | Great shape - polish and release |
+| B | 60-79 | Good - some cleanup needed |
+| C | 40-59 | Needs work - but salvageable |
+| D | 20-39 | Significant issues |
+| F | 0-19 | Consider starting fresh |
+
+### Workflow
+
+1. **Before tweaking**: `als-doctor quick project.als`
+2. **Save backup** of .als file
+3. **Make changes** in Ableton
+4. **After changes**: `als-doctor compare backup.als project.als`
+5. **Verify improvement** before continuing
+
+For the complete evaluation workflow with optional audio analysis and LLM experts, see:
+- `docs/ai/ALSFirstEvaluationWorkflow.md` - ALS-first approach (no export required)
+- `docs/ai/AIAssistedProductionWorkflow.md` - Full audio analysis workflow
+
+### Filter by Project Number
+
+```cmd
+# Only projects starting with 22 or higher
+als-doctor scan "D:\Ableton Projects" --min-number 22
+```
+
+---
+
 ## Tips for Best Results
 
 1. **Export stems at mix volume** - Don't normalize individual stems

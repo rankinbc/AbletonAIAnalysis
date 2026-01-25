@@ -1,0 +1,72 @@
+# allin1 Docker Compose Configuration
+#
+# Usage:
+#   1. Place audio files in ./audio directory (create if needed)
+#   2. Run: docker-compose up
+#   3. Results appear in stdout as JSON
+#
+# For GPU support, uncomment the deploy section below.
+
+version: '3.8'
+
+services:
+  allin1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: allin1:latest
+    volumes:
+      # Mount audio directory read-only
+      - ./audio:/input:ro
+      # Mount output directory for any file outputs
+      - ./output:/output
+    # Default: run with --help
+    command: ["--help"]
+
+    # Uncomment below for GPU support (requires nvidia-docker)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # Service for analyzing a specific file with JSON output
+  # Usage: docker-compose run --rm allin1-json /input/your_song.wav
+  allin1-json:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: allin1:latest
+    volumes:
+      - ./audio:/input:ro
+      - ./output:/output
+    entrypoint: ["/entrypoint.sh", "--json"]
+
+    # Uncomment below for GPU support
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # GPU-enabled service (requires nvidia-docker)
+  allin1-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: allin1:latest
+    volumes:
+      - ./audio:/input:ro
+      - ./output:/output
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    entrypoint: ["/entrypoint.sh", "--json"]

@@ -3,6 +3,8 @@
 
 A practical guide for using AI analysis to improve your mixes through systematic iteration.
 
+> **Recommended:** Before using this workflow, run the [ALS-First Evaluation Workflow](ALSFirstEvaluationWorkflow.md) to check and fix your Ableton project structure without requiring audio export. This workflow (below) focuses on audio analysis and requires exporting from Ableton.
+
 ---
 
 ## Table of Contents

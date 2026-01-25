@@ -1,0 +1,74 @@
+# allin1 Docker Image
+# Uses Python 3.11 to avoid compatibility issues with madmom/natten
+
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libsndfile1 \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Install PyTorch CPU version (smaller, works everywhere)
+# For GPU, replace with: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Install allin1 dependencies
+RUN pip install --no-cache-dir \
+    numpy \
+    scipy \
+    librosa \
+    soundfile \
+    cython
+
+# Install madmom (works on Python 3.11)
+RUN pip install --no-cache-dir madmom
+
+# Install natten (CPU version)
+# For GPU: pip install natten -f https://shi-labs.com/natten/wheels/cu118/torch2.0.0/index.html
+RUN pip install --no-cache-dir natten
+
+# Install allin1
+RUN pip install --no-cache-dir allin1
+
+# Create directories for input/output
+RUN mkdir -p /input /output
+
+# Create entrypoint script
+RUN echo '#!/bin/bash\n\
+if [ "$1" = "--json" ]; then\n\
+    shift\n\
+    python -c "\n\
+import sys\n\
+import json\n\
+import allin1\n\
+\n\
+audio_path = sys.argv[1]\n\
+result = allin1.analyze(audio_path)\n\
+\n\
+output = {\n\
+    \"bpm\": float(result.bpm),\n\
+    \"beats\": [float(b) for b in result.beats],\n\
+    \"downbeats\": [float(d) for d in result.downbeats],\n\
+    \"segments\": [\n\
+        {\n\
+            \"label\": s.label,\n\
+            \"start\": float(s.start),\n\
+            \"end\": float(s.end)\n\
+        }\n\
+        for s in result.segments\n\
+    ]\n\
+}\n\
+print(json.dumps(output))\n\
+" "$@"\n\
+else\n\
+    allin1 "$@"\n\
+fi' > /entrypoint.sh && chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["--help"]

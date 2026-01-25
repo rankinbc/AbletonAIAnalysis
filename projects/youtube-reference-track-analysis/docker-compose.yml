@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  allin1:
+    build:
+      context: .
+      dockerfile: Dockerfile.allin1
+    image: allin1:latest
+    volumes:
+      # Mount audio files directory (read-only for safety)
+      - ./tracks:/input:ro
+      # Mount output directory for results
+      - ./allin1_output:/output
+    # Default command - analyze all wav/m4a files in /input
+    command: ["--json", "--out-dir", "/output", "/input"]
+
+    # GPU support (uncomment if you have NVIDIA GPU)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # Service for analyzing a single file
+  allin1-single:
+    build:
+      context: .
+      dockerfile: Dockerfile.allin1
+    image: allin1:latest
+    volumes:
+      - ./tracks:/input:ro
+      - ./allin1_output:/output
+    # Override with: docker-compose run allin1-single --json /input/filename.wav
+    entrypoint: ["/entrypoint.sh"]
+    profiles:
+      - single

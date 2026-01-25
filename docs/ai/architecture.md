@@ -2,6 +2,16 @@
 
 Context documentation for AI assistance with this project.
 
+## Related Projects
+
+| Project | Location | Purpose |
+|---------|----------|---------|
+| **AbletonManagement** | `C:\claude-workspace\AbletonMangement` | Sister project for Ableton project management (separate from analysis) |
+
+This project (AbletonAIAnalysis) focuses on **analysis and diagnostics**. The sister project handles broader Ableton project management tasks. They are designed to be independent but complementary.
+
+---
+
 ## Project Overview
 
 Ableton AI Analysis is a comprehensive music production analysis tool designed for **trance music producers** using Ableton Live. The system:
@@ -80,12 +90,21 @@ projects/music-analyzer/
     ├── config.py           # Configuration loader
     ├── audio_analyzer.py   # Single audio file analysis + sections
     ├── stem_analyzer.py    # Multi-stem clash detection
-    ├── als_parser.py       # Ableton .als file parsing
+    ├── als_parser.py       # Ableton .als file parsing (basic)
     ├── mastering.py        # Matchering integration (experimental)
     ├── reporter.py         # Report generation (HTML/text/JSON)
     ├── stem_separator.py   # Spleeter-based stem separation
     ├── reference_storage.py    # Reference track library
-    └── reference_comparator.py # Mix vs reference comparison
+    ├── reference_comparator.py # Mix vs reference comparison
+    │
+    │   # ALS Doctor - Project Health Analysis (no audio export required)
+    ├── als_doctor.py           # Unified CLI for ALS analysis
+    ├── device_chain_analyzer.py # Deep .als device chain extraction
+    ├── effect_chain_doctor.py  # Rules engine for mixing issues
+    ├── project_differ.py       # Compare two .als versions
+    └── batch_scanner.py        # Scan & rank multiple projects
+
+als-doctor.bat              # Windows batch wrapper (in project root)
 ```
 
 ---
@@ -819,3 +838,210 @@ threshold = cfg('clipping', 'threshold')
 - **v1.1.0** - Added configuration system (config.yaml)
 - **v1.2.0** - Added LLM recommendation module (17 specialist prompts)
 - **v1.3.0** - Added section analysis with timestamped issue detection
+- **v1.4.0** - Added ALS Doctor: project health analysis without audio export
+
+---
+
+## ALS Doctor - Project Health Analysis
+
+**Location:** `projects/music-analyzer/src/als_doctor.py`
+**Batch file:** `als-doctor.bat` (project root)
+
+### Overview
+
+ALS Doctor analyzes Ableton Live Set (.als) files **without requiring audio export**. It extracts device chains, parameters, and project structure directly from the .als file (gzipped XML) to detect mixing problems and track project health over time.
+
+### CLI Usage
+
+```cmd
+cd C:\claude-workspace\AbletonAIAnalysis
+
+# Quick health check (instant score)
+als-doctor quick "path\to\project.als"
+
+# Full diagnosis with actionable fixes
+als-doctor diagnose "path\to\project.als"
+
+# Compare two versions (track improvement/regression)
+als-doctor compare "v1.als" "v2.als"
+
+# Batch scan and rank projects
+als-doctor scan "D:\Ableton Projects" --limit 30
+als-doctor scan "D:\Ableton Projects" --min-number 22  # Projects 22+
+```
+
+### Modules
+
+#### 1. DeviceChainAnalyzer (device_chain_analyzer.py)
+
+Extracts detailed device information from .als files.
+
+| Data Extracted | Example |
+|----------------|---------|
+| Device order in chain | EQ8 -> Compressor2 -> Saturator -> Limiter |
+| Device ON/OFF state | `[ON] Eq8`, `[OFF] Compressor2` |
+| Device parameters | Threshold=0.04, Ratio=4:1, Attack=0.05 |
+| Track volume/pan | +6.0 dB, pan -0.3 |
+| VST/AU plugin names | TRITON, FabFilter Pro-Q 4 |
+| Custom device names | "Kick Reducer", "De-esser" |
+
+**Device Categories Detected:**
+- INSTRUMENT (Simpler, Operator, VST synths)
+- EQ (Eq8, Eq3, ChannelEq)
+- COMPRESSOR (Compressor2, GlueCompressor)
+- LIMITER
+- SATURATOR (Saturator, Overdrive, Amp)
+- REVERB, DELAY
+- MODULATION (Chorus, Flanger, Phaser)
+- FILTER (AutoFilter)
+- UTILITY (Gain, Utility)
+- VST, AU, MAX4LIVE
+
+#### 2. EffectChainDoctor (effect_chain_doctor.py)
+
+Rules engine that diagnoses mixing problems based on device chain analysis.
+
+**Issue Categories:**
+
+| Category | Example Issue |
+|----------|--------------|
+| CLUTTER | "36% of devices are disabled - delete them" |
+| WRONG_EFFECT | "De-esser on hi-hat - remove it" |
+| CHAIN_ORDER | "Limiter should be LAST in chain" |
+| DUPLICATE | "3 compressors in series - too many?" |
+| PARAMETERS | "Ratio at infinity:1 - use a Limiter instead" |
+| GAIN_STAGING | "Track volume at +140 dB" |
+
+**Severity Levels:**
+- CRITICAL: Will definitely cause problems
+- WARNING: Likely causing problems
+- SUGGESTION: Could be improved
+- INFO: Just FYI
+
+**Health Score:** 0-100 (calculated from issues found)
+- A (80-100): Great shape
+- B (60-79): Good, some cleanup needed
+- C (40-59): Needs work
+- D (20-39): Significant issues
+- F (0-19): Major problems
+
+**Trance-Specific Rules:**
+- De-essers flagged on drum tracks (kick, hat, snare, clap)
+- Limiter should be last in chain
+- EQ before compressor (subtractive EQ first)
+- Multiple limiters on same track flagged
+- 3+ compressors flagged as suspicious
+
+#### 3. ProjectDiffer (project_differ.py)
+
+Compares two versions of a project to track improvement or regression.
+
+**Comparison Metrics:**
+| Metric | Tracked |
+|--------|---------|
+| Health score delta | +15 (improved) or -20 (regressed) |
+| Issue count delta | +5 more issues or -3 fewer |
+| Device count | 40 -> 115 devices |
+| Disabled device count | 5 -> 35 clutter |
+| Devices added/removed | List of changes |
+| Tracks added/removed | List of changes |
+
+**Output:**
+- `[IMPROVEMENT]` / `[REGRESSION]` / `[NO CHANGE]` verdict
+- What got better (reasons)
+- What got worse (reasons)
+- Specific device and track changes
+
+#### 4. BatchScanner (batch_scanner.py)
+
+Scans multiple projects and ranks them by workability.
+
+**Features:**
+- Recursive directory scanning
+- Filter by project number (`--min-number 22`)
+- Limit scan size (`--limit 50`)
+- Grade distribution summary
+- Best songs to work on
+- Songs that need cleanup
+- Songs to consider abandoning
+
+**Output Example:**
+```
+GRADE DISTRIBUTION:
+  A:   3 ###
+  B:   5 #####
+  C:   8 ########
+  D:   4 ####
+  F:   2 ##
+
+BEST SONGS TO WORK ON (Grade A/B):
+  [A] 22_2.als - 100/100, 140 BPM
+  [A] 35_3.als - 92/100, 138 BPM
+  [B] 41_1.als - 78/100, 142 BPM
+```
+
+### Workflow Integration
+
+**See:** [ALS-First Evaluation Workflow](ALSFirstEvaluationWorkflow.md) for complete workflow documentation.
+
+The ALS-First workflow makes audio export and LLM expert analysis optional:
+- **Phase 1:** ALS Quick Check (required, 30 sec)
+- **Phase 2:** Full ALS Diagnosis (optional, 2 min)
+- **Phase 3:** Audio Analysis (optional, requires export)
+- **Phase 4:** LLM Expert Analysis (optional)
+
+**Quick Reference:**
+
+**Before/After Workflow:**
+1. `als-doctor quick project.als` - Check current health
+2. Save backup copy of .als file
+3. Make changes in Ableton
+4. `als-doctor compare backup.als project.als` - Verify improvement
+
+**Project Selection Workflow:**
+1. `als-doctor scan "Ableton Projects" --min-number 20 --limit 50`
+2. Pick a Grade A/B project to polish
+3. Or pick a Grade C project with a good musical idea to clean up
+
+**Version Comparison:**
+```cmd
+als-doctor compare "22 Project\22_2.als" "22 Project\22_12.als"
+```
+Shows exactly what changed between your cleanest and most cluttered versions.
+
+### Data Extracted From .als Files
+
+The .als file is gzipped XML containing complete project state:
+
+```
+.als file (gzipped XML)
+├── Project metadata (tempo, time sig, version)
+├── Tracks[]
+│   ├── Name, type (MIDI/Audio/Return/Master)
+│   ├── Volume, pan, mute, solo
+│   └── DeviceChain[]
+│       ├── Device type (Eq8, Compressor2, VST, etc.)
+│       ├── ON/OFF state
+│       ├── User-assigned name
+│       └── Parameters (Threshold, Ratio, Attack, etc.)
+├── MIDI clips and notes
+├── Audio clip references
+├── Locators/markers
+└── Plugin list (VST, AU, Max4Live)
+```
+
+### No Audio Export Required
+
+Unlike the audio analysis pipeline, ALS Doctor works **entirely from the .als file**:
+
+| Analysis Type | Requires Audio Export? |
+|--------------|------------------------|
+| Audio analysis (clipping, loudness, etc.) | YES |
+| Stem analysis (frequency clashes) | YES |
+| Reference comparison | YES |
+| **Device chain analysis** | **NO** |
+| **Effect chain diagnosis** | **NO** |
+| **Version comparison** | **NO** |
+| **Batch project ranking** | **NO** |
+
+This enables instant feedback on project health without the Ableton export workflow.

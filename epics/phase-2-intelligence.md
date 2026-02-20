@@ -22,19 +22,20 @@ This is what no other tool provides.
 
 ## Stories
 
-### Story 2.1: Track Changes Between Versions
+### Story 2.1: Track Changes Between Versions ✅ IMPLEMENTED
 
 **As a** music producer
 **I want to** see exactly what changed between two versions
 **So that** I can understand what made it better or worse
 
 **Acceptance Criteria:**
-- [ ] `als-doctor db changes <song>` shows changes between latest and previous
-- [ ] `als-doctor db changes <song> --from <v1> --to <v2>` compares specific versions
-- [ ] Shows: devices added/removed, parameters changed, health delta
-- [ ] Categorizes changes: "Likely helped" vs "Likely hurt" based on health delta
-- [ ] Links changes to issue resolution (e.g., "Removed duplicate EQ -> fixed warning")
-- [ ] Stores change records in database for later analysis
+- [x] `als-doctor db changes <song>` shows changes between latest and previous
+- [x] `als-doctor db changes <song> --from <v1> --to <v2>` compares specific versions
+- [x] Shows: devices added/removed, parameters changed, health delta
+- [x] Categorizes changes: "Likely helped" vs "Likely hurt" based on health delta
+- [x] Categorizes changes by type: structural, mixing, arrangement, plugin
+- [x] Links changes to issue resolution (e.g., "Removed duplicate EQ -> fixed warning")
+- [x] Stores change records in database for later analysis
 
 **Example Output:**
 ```
@@ -82,20 +83,20 @@ changes (
 
 ---
 
-### Story 2.2: Correlate Changes with Outcomes
+### Story 2.2: Correlate Changes with Outcomes ✅ IMPLEMENTED
 
 **As a** music producer
 **I want to** know which types of changes typically help or hurt my mixes
 **So that** I can learn what works for me
 
 **Acceptance Criteria:**
-- [ ] `als-doctor db insights` shows aggregated change patterns
-- [ ] Tracks: "When you do X, health usually goes Y"
-- [ ] Categories: device additions, removals, parameter changes
-- [ ] Shows confidence level based on sample size (low/medium/high)
-- [ ] Highlights your most common mistakes
-- [ ] Shows "insufficient data" message if < 10 version comparisons available
-- [ ] `--min-samples N` to adjust confidence threshold
+- [x] `als-doctor db insights` shows aggregated change patterns
+- [x] Tracks: "When you do X, health usually goes Y"
+- [x] Categories: device additions, removals, parameter changes
+- [x] Shows confidence level based on sample size (low/medium/high)
+- [x] Highlights your most common mistakes
+- [x] Shows "insufficient data" message if < 10 version comparisons available
+- [ ] `--min-samples N` to adjust confidence threshold (optional, not yet implemented)
 
 **Example Output:**
 ```
@@ -130,20 +131,20 @@ Confidence: HIGH (10+ samples), MEDIUM (5-9), LOW (2-4)
 
 ---
 
-### Story 2.3: Extend ALS Parser for MIDI/Arrangement
+### Story 2.3: Extend ALS Parser for MIDI/Arrangement ✅ IMPLEMENTED
 
 **As a** music producer
 **I want to** analyze MIDI content and arrangement structure
 **So that** I can get feedback on composition, not just mixing
 
 **Acceptance Criteria:**
-- [ ] `als-doctor diagnose <file> --midi` includes MIDI analysis
-- [ ] Detects: empty MIDI clips, very short clips (<1 bar), duplicate clips
-- [ ] Analyzes arrangement: locators/markers if present
-- [ ] Counts: total MIDI notes, clip count, track density
-- [ ] Flags: tracks with no content, orphaned clips
-- [ ] Shows arrangement structure if markers exist
-- [ ] Stores MIDI stats in database when using --save
+- [x] `als-doctor diagnose <file> --midi` includes MIDI analysis
+- [x] Detects: empty MIDI clips, very short clips (<1 bar), duplicate clips
+- [x] Analyzes arrangement: locators/markers if present
+- [x] Counts: total MIDI notes, clip count, track density
+- [x] Flags: tracks with no content, orphaned clips
+- [x] Shows arrangement structure if markers exist
+- [x] Stores MIDI stats in database when using --save
 
 **Example Output:**
 ```
@@ -178,19 +179,19 @@ ISSUES:
 
 ---
 
-### Story 2.4: Build Personal Style Profile
+### Story 2.4: Build Personal Style Profile ✅ IMPLEMENTED
 
 **As a** music producer
 **I want to** see patterns from my best-scoring projects
 **So that** I can understand and replicate my winning formula
 
 **Acceptance Criteria:**
-- [ ] `als-doctor db profile` analyzes Grade A versions (80+ score)
-- [ ] Shows: common device chains, typical device counts, parameter ranges
-- [ ] `als-doctor db profile --compare <file>` compares project against profile
-- [ ] Identifies what makes your best work different from your worst
-- [ ] Shows "insufficient data" if < 3 Grade A versions
-- [ ] Stores profile as JSON for quick access
+- [x] `als-doctor db profile` analyzes Grade A versions (80+ score)
+- [x] Shows: common device chains, typical device counts, parameter ranges
+- [x] `als-doctor db profile --compare <file>` compares project against profile
+- [x] Identifies what makes your best work different from your worst
+- [x] Shows "insufficient data" if < 3 Grade A versions
+- [x] Stores profile as JSON for quick access
 
 **Example Output:**
 ```
@@ -234,20 +235,20 @@ INSIGHT: Your best mixes are SIMPLER.
 
 ---
 
-### Story 2.5: Compare Against Templates
+### Story 2.5: Compare Against Templates ✅ IMPLEMENTED
 
 **As a** music producer
 **I want to** compare my project against professional templates
 **So that** I can learn from established patterns
 
 **Acceptance Criteria:**
-- [ ] `als-doctor compare-template <file> --template <template.als>` compares structure
-- [ ] Templates stored in `templates/` folder
-- [ ] Compares: device chain patterns, track organization, device counts
-- [ ] Highlights deviations from template patterns
-- [ ] `als-doctor templates list` shows available templates
-- [ ] `als-doctor templates add <file> --name <name>` adds template to library
-- [ ] Similarity score (0-100%) for overall match
+- [x] `als-doctor compare-template <file> --template <template.als>` compares structure
+- [x] Templates stored in `templates/` folder
+- [x] Compares: device chain patterns, track organization, device counts
+- [x] Highlights deviations from template patterns
+- [x] `als-doctor templates list` shows available templates
+- [x] `als-doctor templates add <file> --name <name>` adds template to library
+- [x] Similarity score (0-100%) for overall match
 
 **Example Output:**
 ```
@@ -285,20 +286,20 @@ SUGGESTIONS:
 
 ---
 
-### Story 2.6: Smart Recommendations Engine
+### Story 2.6: Smart Recommendations Engine ✅ IMPLEMENTED
 
 **As a** music producer
 **I want to** get personalized fix suggestions based on my history
 **So that** recommendations are tailored to what works for ME
 
 **Acceptance Criteria:**
-- [ ] `als-doctor diagnose <file> --smart` uses history for recommendations
-- [ ] Prioritizes fixes that have helped YOU before (from insights)
-- [ ] De-prioritizes fixes you've ignored multiple times
-- [ ] References your style profile for context
-- [ ] Shows confidence: "Based on your history, this fix typically helps"
-- [ ] Falls back to standard recommendations if insufficient history
-- [ ] `--smart` becomes default once enough history exists (20+ versions)
+- [x] `als-doctor diagnose <file> --smart` uses history for recommendations
+- [x] Prioritizes fixes that have helped YOU before (from insights)
+- [x] De-prioritizes fixes you've ignored multiple times
+- [x] References your style profile for context
+- [x] Shows confidence: "Based on your history, this fix typically helps"
+- [x] Falls back to standard recommendations if insufficient history
+- [x] `--smart` becomes default once enough history exists (20+ versions)
 
 **Example Output:**
 ```
@@ -371,13 +372,56 @@ Show helpful "insufficient data" messages below thresholds.
 
 ## CLI Command Summary
 
+### ✅ All Phase 2 Commands Implemented
+
+```bash
+# Database initialization
+als-doctor db init                              # Initialize database
+
+# Library overview
+als-doctor db status                            # Show library status with grade distribution
+als-doctor db list [--sort name|score|date]     # List all tracked projects
+
+# Version history
+als-doctor db history <song>                    # Show version timeline with sparkline
+als-doctor db trend <song>                      # Show health trend analysis
+
+# Change tracking
+als-doctor db changes <song>                    # Show changes between versions
+als-doctor db changes <song> --no-compute       # Don't auto-compute missing changes
+als-doctor db compute-changes <song>            # Compute and store changes for a project
+
+# Insights and patterns
+als-doctor db insights                          # Show patterns across all projects
+als-doctor db patterns                          # Show learned patterns with confidence levels
+
+# MIDI/Arrangement analysis (Story 2.3)
+als-doctor diagnose <file> --midi               # Include MIDI analysis in diagnosis
+
+# Style profile (Story 2.4)
+als-doctor db profile                           # Show patterns from your best work
+als-doctor db profile --compare <file>          # Compare a file against your profile
+als-doctor db profile --save                    # Save profile to data/profile.json
+
+# Template comparison (Story 2.5)
+als-doctor templates list                       # List all available templates
+als-doctor templates add <file> --name <name>   # Add a new template
+als-doctor templates remove <name>              # Remove a template
+als-doctor templates show <name>                # Show template details
+als-doctor compare-template <file> -t <name>    # Compare project to template
+
+# Smart recommendations (Story 2.6)
+als-doctor diagnose <file> --smart              # Use personalized recommendations
+als-doctor diagnose <file> --no-smart           # Disable smart mode
+als-doctor db smart <file>                      # Smart diagnosis standalone
+als-doctor db recommend                         # Get prioritized recommendations
+als-doctor db whatif <song>                     # Predict impact of changes
 ```
-als-doctor db changes <song> [--from X --to Y]   # Track changes
-als-doctor db insights [--min-samples N]          # Correlate outcomes
-als-doctor diagnose <file> --midi                 # MIDI analysis
-als-doctor db profile [--compare <file>]          # Style profile
-als-doctor templates list                         # List templates
-als-doctor templates add <file> --name <name>     # Add template
-als-doctor compare-template <file> --template <T> # Compare to template
-als-doctor diagnose <file> --smart                # Smart recommendations
-```
+
+### Change Categories
+
+Changes are automatically categorized into:
+- **📁 STRUCTURAL**: Track additions/removals
+- **🎚️ MIXING**: EQ, Compressor, Limiter, Utility, etc.
+- **🎵 ARRANGEMENT**: Reverb, Delay, Chorus, Flanger, etc.
+- **🔌 PLUGIN**: Other device changes

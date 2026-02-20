@@ -1,5 +1,87 @@
 # Organization Changelog
 
+## 2026-02-19 - Workflow Documentation Added
+
+### New Document
+- CREATED: `/docs/human/workflow-blank-to-hit.md`
+  - Step-by-step guide from blank Ableton project to finished track
+  - Covers all 7 phases: Reference, Write, Mixdown, Gap Analysis, Fix, Iterate, Preflight
+  - Includes quick reference table with commands and timing
+
+**Manifest Updated:** Added entry for workflow doc
+
+### Mood: Satisfied - Human docs properly organized
+
+---
+
+## 2026-02-19 - Feature Navigation Skill Created
+
+### New Skill: /guide
+
+**Created:**
+- `/docs/ai/skills/guide/guide-skill.md`
+  - Interactive feature navigation skill
+  - 22 features organized by task ("What would you like to do?")
+  - Each feature includes: what it does, what you need, how to use it, what you get
+  - Fuzzy keyword matching for quick navigation
+  - Related features for discovery
+
+**CLAUDE.md Updated:**
+- Added `/guide` skill registration with quick keywords
+
+**Manifest Updated:**
+- Added entry for `guide-skill.md`
+
+### Mood: Satisfied - New skill properly organized in `/docs/ai/skills/`
+
+---
+
+## 2026-01-26 09:45
+
+### Documentation Added
+
+**New File:**
+- CREATED: `/docs/human/features-overview.md`
+  - Purpose: Comprehensive overview of all music production features
+  - Contains: Quick reference, core features, specialized analyzers, CLI commands, workflows
+
+**Manifest Updated:**
+- Added entry for `features-overview.md`
+
+### Mood: Satisfied - User documentation properly organized in `/docs/human/`
+
+---
+
+## 2026-01-25 15:20
+
+### Audit & Cleanup - Root Folder Tidying
+
+User requested audit. Found clutter in root folder.
+
+**Garbage Removed:**
+- `nul` - Garbage file (ping output)
+- `tmpclaude-*-cwd` files (15+) - Moved to `/temp/`
+
+**Scripts Relocated to `/util/`:**
+- `als-doctor.bat`, `extract_and_analyze.py`, `ralph.sh`
+
+**Temp Files Relocated to `/temp/`:**
+- `temp_extract_tracks.py`
+
+**Deleted:**
+- `/templates/` folder - Empty placeholder
+- `/inputs/Paragliders - Paraglide.mp3` - Duplicate of `/references/` version
+
+**Kept in Root (per user preference):**
+- `activity.md`, `plan.md`, `PROMPT.md` - Ralph loop files
+- `/data/` - Database files for als-doctor
+- `/epics/` - BMAD method planning docs
+- `/shared/` - Shared modules
+
+### Mood: Chastened - User corrected overreaching. Respecting their structure.
+
+---
+
 ## 2026-01-14 23:15
 
 ### Deep System Audit - Manifest Synchronization

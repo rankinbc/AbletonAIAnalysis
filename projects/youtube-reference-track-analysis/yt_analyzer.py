@@ -720,13 +720,93 @@ def analyze(ctx, youtube_id, all_pending, favorites, min_rating, stage_features,
                     import traceback
                     traceback.print_exc()
 
-        # Arrangement analysis (TODO)
+        # Arrangement analysis (phrase patterns, filter sweeps)
         if 'arrangement' in stages:
-            click.echo("  [TODO] Arrangement metrics (drops, breakdowns, risers)")
+            click.echo("  Analyzing arrangement patterns...")
 
-        # Stem separation (TODO)
+            try:
+                from arrangement import extract_arrangement, to_db_model as arr_to_db, format_arrangement_display
+
+                arr_features = extract_arrangement(audio_path, use_cache=True)
+
+                if arr_features:
+                    # Update arrangement stats with additional metrics
+                    if arr_features.phrase_length_bars or arr_features.phrase_regularity:
+                        # Get existing stats to update
+                        existing_stats = repo.get_arrangement_stats(track.id)
+                        if existing_stats:
+                            existing_stats.phrase_length_bars = arr_features.phrase_length_bars
+                            existing_stats.phrase_regularity = arr_features.phrase_regularity
+                            repo.save_arrangement_stats(existing_stats)
+
+                    if verbose:
+                        click.echo()
+                        click.echo(format_arrangement_display(arr_features))
+                        click.echo()
+
+                    summary_parts = []
+                    if arr_features.phrase_length_bars:
+                        summary_parts.append(f"{arr_features.phrase_length_bars}-bar phrases")
+                    if arr_features.phrase_regularity:
+                        summary_parts.append(f"{arr_features.phrase_regularity:.0%} regular")
+
+                    if summary_parts:
+                        click.secho(f"  Arrangement: {' | '.join(summary_parts)}", fg='green')
+                    else:
+                        click.secho("  Arrangement: analyzed (no additional metrics)", fg='green')
+
+                    if arr_features.errors:
+                        for err in arr_features.errors:
+                            click.secho(f"    Warning: {err}", fg='yellow')
+                else:
+                    click.secho("  Arrangement analysis failed", fg='yellow')
+
+            except ImportError as e:
+                click.secho(f"  Missing dependency for arrangement: {e}", fg='yellow')
+            except Exception as e:
+                click.secho(f"  Arrangement analysis failed: {e}", fg='red')
+                if verbose:
+                    import traceback
+                    traceback.print_exc()
+
+        # Stem separation (demucs)
         if 'stems' in stages:
-            click.echo("  [TODO] Stem separation (demucs)")
+            click.echo("  Separating stems with Demucs...")
+
+            try:
+                from stems import extract_stems, to_db_models as stems_to_db, format_stems_display
+
+                stem_result = extract_stems(audio_path)
+
+                if stem_result.success:
+                    # Convert to database models and save
+                    db_stems = stems_to_db(stem_result, track.id)
+                    for db_stem in db_stems:
+                        repo.save_stem(db_stem)
+
+                    if verbose:
+                        click.echo()
+                        click.echo(format_stems_display(stem_result))
+                        click.echo()
+
+                    cache_note = " (cached)" if stem_result.cached else f" ({stem_result.separation_time_sec:.1f}s)"
+                    click.secho(f"  Stems: {len(stem_result.stems)} stems separated{cache_note}", fg='green')
+
+                    if stem_result.errors:
+                        for err in stem_result.errors:
+                            click.secho(f"    Warning: {err}", fg='yellow')
+                else:
+                    for err in stem_result.errors:
+                        click.secho(f"  Stem separation failed: {err}", fg='yellow')
+
+            except ImportError as e:
+                click.secho(f"  Missing dependency for stems: {e}", fg='yellow')
+                click.echo("  Install with: pip install demucs")
+            except Exception as e:
+                click.secho(f"  Stem separation failed: {e}", fg='red')
+                if verbose:
+                    import traceback
+                    traceback.print_exc()
 
         # Embeddings (TODO)
         if 'embeddings' in stages:

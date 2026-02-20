@@ -1,0 +1,31 @@
+# Claude Container Configuration
+# Generated: 2026-01-25T18:41:28.6342222-05:00
+
+project:
+  name: "AbletonAIAnalysis"
+  type: "generic"
+
+container:
+  timeout: 30m
+  memory: 8G
+  cpus: "2.0"
+  network: isolated
+
+ralph:
+  mode: build
+  maxIterations: 20
+  completionSignal: "DONE"
+  promptFile: PROMPT.md
+
+models:
+  primary: sonnet
+  subagents: sonnet
+
+validation:
+  test: ""
+  lint: ""
+  typecheck: ""
+
+mounts:
+  gitconfig: true
+  ssh: false

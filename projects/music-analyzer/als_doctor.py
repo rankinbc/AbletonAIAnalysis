@@ -44,7 +44,22 @@ from database import (
     compare_template, ProjectTemplate, TemplateComparisonResult,
     # Smart recommendations
     smart_diagnose, SmartDiagnoseResult, SmartRecommendation,
-    has_sufficient_history, _count_database_versions
+    has_sufficient_history, _count_database_versions,
+    # Phase 2: Intelligence features
+    analyze_project_trend, ProjectTrend, TrendPoint,
+    get_what_if_predictions, WhatIfAnalysis, WhatIfPrediction,
+    get_change_impact_predictions, ChangeImpactPrediction,
+    # Phase 2 Enhanced: Change impact assessment
+    get_project_changes_enhanced, ChangeImpactAssessment,
+    get_learned_patterns, ChangePattern,
+    # Phase 2: Personalized recommendations
+    get_project_specific_patterns, ProjectPatterns,
+    get_personalized_recommendations, PersonalizedRecommendationsResult, PersonalizedRecommendation,
+    # Phase 2: Enhanced trend analysis
+    get_enhanced_trend_analysis, EnhancedTrendAnalysis, Milestone,
+    # Phase 2: Reference comparison learning
+    persist_reference_comparison, get_reference_insights, get_reference_history,
+    ReferenceInsights, StoredReferenceComparison, ReferenceRecommendationPattern
 )
 from cli_formatter import get_formatter, CLIFormatter, reset_formatter
 from midi_analyzer import MIDIAnalyzer, MIDIAnalysisResult, get_midi_issues
@@ -365,20 +380,25 @@ def db_history_cmd(ctx, song: str):
 @click.option('--from', 'from_version', default=None, help='Starting version filename')
 @click.option('--to', 'to_version', default=None, help='Ending version filename')
 @click.option('--compute', is_flag=True, help='Compute changes from .als files (requires files to exist)')
+@click.option('--enhanced', '-e', is_flag=True, help='Show enhanced analysis with confidence scores')
+@click.option('--verbose', '-v', is_flag=True, help='Show detailed reasoning for each change')
 @click.pass_context
-def db_changes_cmd(ctx, song: str, from_version: Optional[str], to_version: Optional[str], compute: bool):
+def db_changes_cmd(ctx, song: str, from_version: Optional[str], to_version: Optional[str],
+                   compute: bool, enhanced: bool, verbose: bool):
     """Show changes between versions of a song.
 
     Displays device and track changes between consecutive versions,
     categorizing them as 'Likely helped' or 'Likely hurt' based on
-    the health score delta.
+    the health score delta and historical patterns.
 
     Use --compute to analyze .als files and populate the changes database.
-    Without --compute, shows only previously computed changes.
+    Use --enhanced to see confidence scores based on historical patterns.
+    Use --verbose to see detailed reasoning for each change assessment.
 
     Example:
         als-doctor db changes "22 Project"
         als-doctor db changes 22 --compute
+        als-doctor db changes 22 --enhanced -v
         als-doctor db changes 22 --from v1.als --to v3.als
     """
     fmt = ctx.obj.get('formatter', get_formatter())
@@ -398,15 +418,19 @@ def db_changes_cmd(ctx, song: str, from_version: Optional[str], to_version: Opti
         fmt.success(message)
         fmt.print("")
 
-    # Get changes
-    result, message = get_project_changes(song, from_version, to_version)
+    # Get changes - use enhanced version if flag is set
+    if enhanced:
+        result, message = get_project_changes_enhanced(song, from_version, to_version)
+    else:
+        result, message = get_project_changes(song, from_version, to_version)
 
     if result is None:
         fmt.error(message)
         raise SystemExit(1)
 
     # Header
-    fmt.header(f"CHANGES: {result.song_name}")
+    header_suffix = " (Enhanced Analysis)" if enhanced else ""
+    fmt.header(f"CHANGES: {result.song_name}{header_suffix}")
     fmt.print("")
 
     if not result.comparisons:
@@ -439,10 +463,21 @@ def db_changes_cmd(ctx, song: str, from_version: Optional[str], to_version: Opti
             fmt.print("")
             continue
 
-        # Group changes by likely outcome
-        helped = [c for c in comparison.changes if c.likely_helped]
-        hurt = [c for c in comparison.changes if not c.likely_helped and comparison.health_delta != 0]
-        neutral = [c for c in comparison.changes if comparison.health_delta == 0]
+        # Group changes by category (enhanced mode uses impact_assessment)
+        if enhanced:
+            helped = [c for c in comparison.changes
+                      if c.impact_assessment and c.impact_assessment.category == 'helped']
+            hurt = [c for c in comparison.changes
+                    if c.impact_assessment and c.impact_assessment.category == 'hurt']
+            neutral = [c for c in comparison.changes
+                       if c.impact_assessment and c.impact_assessment.category == 'neutral']
+            unknown = [c for c in comparison.changes
+                       if not c.impact_assessment or c.impact_assessment.category == 'unknown']
+        else:
+            helped = [c for c in comparison.changes if c.likely_helped]
+            hurt = [c for c in comparison.changes if not c.likely_helped and comparison.health_delta != 0]
+            neutral = [c for c in comparison.changes if comparison.health_delta == 0]
+            unknown = []
 
         if helped:
             fmt.print("")
@@ -451,11 +486,7 @@ def db_changes_cmd(ctx, song: str, from_version: Optional[str], to_version: Opti
             else:
                 fmt.print("  Likely Helped:")
             for change in helped[:10]:
-                change_symbol = _get_change_symbol(change.change_type)
-                if change.device_name:
-                    fmt.print(f"    {change_symbol} {change.track_name}: {change.device_name}")
-                else:
-                    fmt.print(f"    {change_symbol} {change.track_name}")
+                _print_change(fmt, change, enhanced, verbose)
             if len(helped) > 10:
                 fmt.print(f"    ... and {len(helped) - 10} more")
 
@@ -466,25 +497,28 @@ def db_changes_cmd(ctx, song: str, from_version: Optional[str], to_version: Opti
             else:
                 fmt.print("  Likely Hurt:")
             for change in hurt[:10]:
-                change_symbol = _get_change_symbol(change.change_type)
-                if change.device_name:
-                    fmt.print(f"    {change_symbol} {change.track_name}: {change.device_name}")
-                else:
-                    fmt.print(f"    {change_symbol} {change.track_name}")
+                _print_change(fmt, change, enhanced, verbose)
             if len(hurt) > 10:
                 fmt.print(f"    ... and {len(hurt) - 10} more")
 
         if neutral:
             fmt.print("")
-            fmt.print("  Changes (neutral):")
+            fmt.print("  Neutral:")
             for change in neutral[:5]:
-                change_symbol = _get_change_symbol(change.change_type)
-                if change.device_name:
-                    fmt.print(f"    {change_symbol} {change.track_name}: {change.device_name}")
-                else:
-                    fmt.print(f"    {change_symbol} {change.track_name}")
+                _print_change(fmt, change, enhanced, verbose)
             if len(neutral) > 5:
                 fmt.print(f"    ... and {len(neutral) - 5} more")
+
+        if unknown and enhanced:
+            fmt.print("")
+            if fmt.use_rich:
+                fmt.print("  [dim]Unknown (insufficient history):[/dim]")
+            else:
+                fmt.print("  Unknown (insufficient history):")
+            for change in unknown[:5]:
+                _print_change(fmt, change, enhanced, verbose)
+            if len(unknown) > 5:
+                fmt.print(f"    ... and {len(unknown) - 5} more")
 
         fmt.print("")
 
@@ -497,6 +531,86 @@ def db_changes_cmd(ctx, song: str, from_version: Optional[str], to_version: Opti
     fmt.print_line("=", 60)
     fmt.print(f"Summary: {total_comparisons} version transition(s)")
     fmt.print(f"  Improvements: {improvements} | Regressions: {regressions} | Stable: {stable}")
+
+    if enhanced:
+        # Count change intents
+        all_changes = [c for comp in result.comparisons for c in comp.changes]
+        fixes = len([c for c in all_changes if getattr(c, 'change_intent', 'unknown') == 'likely_fix'])
+        experiments = len([c for c in all_changes if getattr(c, 'change_intent', 'unknown') == 'experiment'])
+
+        if fixes or experiments:
+            fmt.print("")
+            fmt.print(f"  Change Intent: {fixes} fix(es) | {experiments} experiment(s)")
+            if fixes > experiments:
+                fmt.print("  -> You're mostly addressing known issues (good!)")
+            elif experiments > fixes * 2:
+                fmt.print("  -> Lots of experimentation - consider tracking what works")
+
+        fmt.print("")
+        fmt.print("  Tip: Use --verbose to see detailed reasoning for assessments")
+        fmt.print("  Legend: [FIX]=Addresses known issue, [EXP]=Experiment/new change")
+
+
+def _print_change(fmt, change, enhanced: bool, verbose: bool):
+    """Print a single change with optional enhanced info."""
+    change_symbol = _get_change_symbol(change.change_type)
+
+    # Build base output
+    if change.device_name:
+        base_str = f"    {change_symbol} {change.track_name}: {change.device_name}"
+    else:
+        base_str = f"    {change_symbol} {change.track_name}"
+
+    # Add confidence badge in enhanced mode
+    if enhanced and change.impact_assessment:
+        assessment = change.impact_assessment
+        confidence = assessment.confidence
+
+        if confidence == 'HIGH':
+            badge = "[HIGH]" if not fmt.use_rich else "[green][HIGH][/green]"
+        elif confidence == 'MEDIUM':
+            badge = "[MED]" if not fmt.use_rich else "[yellow][MED][/yellow]"
+        elif confidence == 'LOW':
+            badge = "[LOW]" if not fmt.use_rich else "[dim][LOW][/dim]"
+        else:
+            badge = "[?]" if not fmt.use_rich else "[dim][?][/dim]"
+
+        # Add intent indicator (Likely Fix vs Experiment)
+        intent = getattr(change, 'change_intent', 'unknown')
+        if intent == 'likely_fix':
+            intent_badge = "[FIX]" if not fmt.use_rich else "[cyan][FIX][/cyan]"
+        elif intent == 'experiment':
+            intent_badge = "[EXP]" if not fmt.use_rich else "[magenta][EXP][/magenta]"
+        else:
+            intent_badge = ""
+
+        # Add historical context
+        if assessment.historical_occurrences > 0:
+            hist_str = f"({assessment.historical_occurrences}x, avg {assessment.historical_avg_delta:+.1f})"
+        else:
+            hist_str = "(no history)"
+
+        # Build full line with intent badge
+        if intent_badge:
+            fmt.print(f"{base_str} {badge} {intent_badge} {hist_str}")
+        else:
+            fmt.print(f"{base_str} {badge} {hist_str}")
+
+        if verbose:
+            if assessment.reasoning:
+                if fmt.use_rich:
+                    fmt.print(f"      [dim]{assessment.reasoning}[/dim]")
+                else:
+                    fmt.print(f"      {assessment.reasoning}")
+            # Show addressed issue in verbose mode
+            addressed_issue = getattr(change, 'addressed_issue', None)
+            if addressed_issue:
+                if fmt.use_rich:
+                    fmt.print(f"      [cyan]{addressed_issue}[/cyan]")
+                else:
+                    fmt.print(f"      {addressed_issue}")
+    else:
+        fmt.print(base_str)
 
 
 def _get_change_symbol(change_type: str) -> str:
@@ -672,6 +786,137 @@ def db_insights_cmd(ctx):
     fmt.print("  - Scan more versions to improve accuracy")
 
 
+@db.command('patterns')
+@click.option('--min-occurrences', '-m', default=3, help='Minimum occurrences to show pattern (default: 3)')
+@click.pass_context
+def db_patterns_cmd(ctx, min_occurrences: int):
+    """Show learned patterns with detailed statistics.
+
+    Displays all patterns learned from your historical changes,
+    including success rates, average health impact, and recommendations.
+
+    This is similar to 'insights' but provides more detailed statistics
+    and actionable recommendations for each pattern.
+
+    Example:
+        als-doctor db patterns
+        als-doctor db patterns --min-occurrences 5
+    """
+    fmt = ctx.obj.get('formatter', get_formatter())
+    database = get_db()
+
+    if not database.is_initialized():
+        fmt.error("Database not initialized. Run 'als-doctor db init' first.")
+        raise SystemExit(1)
+
+    patterns, message = get_learned_patterns(min_occurrences=min_occurrences)
+
+    if not patterns:
+        fmt.print("No patterns found.")
+        fmt.print("")
+        fmt.print("To build patterns:")
+        fmt.print("  1. Scan projects: als-doctor scan <dir> --save")
+        fmt.print("  2. Compute changes: als-doctor db changes <song> --compute")
+        fmt.print(f"  3. Need at least {min_occurrences} occurrences per pattern")
+        return
+
+    # Header
+    fmt.header("LEARNED PATTERNS")
+    fmt.print("")
+    fmt.print(f"Found {len(patterns)} patterns (min {min_occurrences} occurrences)")
+    fmt.print("")
+
+    # Group by benefit (helpful vs harmful)
+    helpful = [p for p in patterns if p.avg_health_delta > 0]
+    harmful = [p for p in patterns if p.avg_health_delta < 0]
+    neutral = [p for p in patterns if -0.5 <= p.avg_health_delta <= 0.5]
+
+    # Helpful patterns
+    if helpful:
+        fmt.print_line("-", 70)
+        if fmt.use_rich:
+            fmt.print("[green]BENEFICIAL PATTERNS[/green]")
+        else:
+            fmt.print("BENEFICIAL PATTERNS")
+        fmt.print("")
+
+        for p in sorted(helpful, key=lambda x: -x.avg_health_delta)[:10]:
+            _print_pattern(fmt, p)
+
+    # Harmful patterns
+    if harmful:
+        fmt.print_line("-", 70)
+        if fmt.use_rich:
+            fmt.print("[red]HARMFUL PATTERNS[/red]")
+        else:
+            fmt.print("HARMFUL PATTERNS")
+        fmt.print("")
+
+        for p in sorted(harmful, key=lambda x: x.avg_health_delta)[:10]:
+            _print_pattern(fmt, p)
+
+    # Neutral patterns
+    if neutral:
+        fmt.print_line("-", 70)
+        fmt.print("NEUTRAL PATTERNS")
+        fmt.print("")
+
+        for p in neutral[:5]:
+            _print_pattern(fmt, p)
+
+    fmt.print_line("=", 70)
+    fmt.print("Legend:")
+    fmt.print("  [HIGH] = 10+ occurrences, very reliable")
+    fmt.print("  [MED]  = 5-9 occurrences, moderately reliable")
+    fmt.print("  [LOW]  = 3-4 occurrences, limited confidence")
+
+
+def _print_pattern(fmt, pattern: ChangePattern):
+    """Print a single learned pattern with statistics."""
+    action = _format_change_type(pattern.change_type)
+    device = pattern.device_type or 'tracks'
+
+    # Calculate success rate
+    total = pattern.total_occurrences
+    success_rate = (pattern.times_helped / total * 100) if total > 0 else 0
+
+    # Confidence badge
+    confidence = pattern.confidence
+    if confidence == 'HIGH':
+        badge = "[HIGH]" if not fmt.use_rich else "[green][HIGH][/green]"
+    elif confidence == 'MEDIUM':
+        badge = "[MED]" if not fmt.use_rich else "[yellow][MED][/yellow]"
+    else:
+        badge = "[LOW]" if not fmt.use_rich else "[dim][LOW][/dim]"
+
+    # Format delta
+    delta = pattern.avg_health_delta
+    if delta > 0:
+        delta_str = f"+{delta:.1f}" if not fmt.use_rich else f"[green]+{delta:.1f}[/green]"
+    elif delta < 0:
+        delta_str = f"{delta:.1f}" if not fmt.use_rich else f"[red]{delta:.1f}[/red]"
+    else:
+        delta_str = "0.0"
+
+    # Main line
+    fmt.print(f"  {action} {device} {badge}")
+    fmt.print(f"    Avg health: {delta_str} | Occurrences: {total}")
+    fmt.print(f"    Helped: {pattern.times_helped} | Hurt: {pattern.times_hurt} | Neutral: {pattern.times_neutral}")
+    fmt.print(f"    Success rate: {success_rate:.0f}%")
+
+    # Recommendation
+    if fmt.use_rich:
+        fmt.print(f"    [dim]-> {pattern.recommendation}[/dim]")
+    else:
+        fmt.print(f"    -> {pattern.recommendation}")
+
+    # Example devices
+    if pattern.device_name_pattern:
+        fmt.print(f"    Examples: {pattern.device_name_pattern}")
+
+    fmt.print("")
+
+
 @db.command('profile')
 @click.option('--compare', 'compare_file', type=click.Path(exists=True), default=None,
               help='Compare a scanned .als file against your profile')
@@ -814,7 +1059,7 @@ def db_profile_cmd(ctx, compare_file: Optional[str], save: bool):
         fmt.print("")
 
         for insight in profile.insights:
-            fmt.print(f"  • {insight}")
+            fmt.print(f"  - {insight}")
 
         fmt.print("")
 
@@ -827,9 +1072,9 @@ def db_profile_cmd(ctx, compare_file: Optional[str], save: bool):
 
         for filename in grade_a_files[:10]:
             if fmt.use_rich:
-                fmt.print(f"  [green]✓[/green] {filename}")
+                fmt.print(f"  [green]*[/green] {filename}")
             else:
-                fmt.print(f"  ✓ {filename}")
+                fmt.print(f"  * {filename}")
 
         if len(grade_a_files) > 10:
             fmt.print(f"  ... and {len(grade_a_files) - 10} more")
@@ -948,7 +1193,7 @@ def _compare_file_to_profile(file_path: str, fmt: CLIFormatter):
         fmt.print_line("-", 50)
 
         for rec in result.recommendations:
-            fmt.print(f"  • {rec}")
+            fmt.print(f"  - {rec}")
 
         fmt.print("")
 
@@ -984,6 +1229,999 @@ def _display_similarity_gauge(score: int, fmt: CLIFormatter):
     else:
         bar = '=' * filled + '-' * empty
         fmt.print(f"  [{bar}] {score}%")
+
+
+@db.command('trend')
+@click.argument('song')
+@click.option('--graph', '-g', is_flag=True, help='Show ASCII graph visualization')
+@click.option('--milestones', '-m', is_flag=True, help='Show milestone events')
+@click.option('--enhanced', '-e', is_flag=True, help='Show all enhanced features (graph + milestones)')
+@click.pass_context
+def db_trend_cmd(ctx, song: str, graph: bool, milestones: bool, enhanced: bool):
+    """Show health trend analysis for a project.
+
+    Analyzes the health trajectory of a project over its versions
+    to determine if it's improving, stable, or declining.
+
+    Includes:
+      - Trend direction and strength
+      - Health timeline with deltas
+      - Biggest improvements and regressions
+      - Recent momentum
+
+    Use --graph to see an ASCII visualization of health over time.
+    Use --milestones to see significant events (achievements, regressions).
+    Use --enhanced for both graph and milestones with additional metrics.
+
+    Example:
+        als-doctor db trend "22 Project"
+        als-doctor db trend 35 --graph
+        als-doctor db trend 35 --enhanced
+    """
+    fmt = ctx.obj.get('formatter', get_formatter())
+    database = get_db()
+
+    if not database.is_initialized():
+        fmt.error("Database not initialized. Run 'als-doctor db init' first.")
+        raise SystemExit(1)
+
+    # Use enhanced analysis if any enhanced options are set
+    use_enhanced = graph or milestones or enhanced
+
+    if use_enhanced:
+        enhanced_result, msg = get_enhanced_trend_analysis(song)
+        if enhanced_result is None:
+            fmt.error(msg)
+            raise SystemExit(1)
+        result = enhanced_result.trend
+    else:
+        result, msg = analyze_project_trend(song)
+        if result is None:
+            fmt.error(msg)
+            raise SystemExit(1)
+        enhanced_result = None
+
+    # Header
+    fmt.header(f"TREND ANALYSIS: {result.song_name}")
+    fmt.print("")
+
+    # Trend direction with visual indicator
+    fmt.print_line("-", 60)
+    if result.trend_direction == 'improving':
+        if fmt.use_rich:
+            fmt.print(f"  [green]^ IMPROVING[/green] (strength: {result.trend_strength:.0%})")
+        else:
+            fmt.print(f"  ^ IMPROVING (strength: {result.trend_strength:.0%})")
+    elif result.trend_direction == 'declining':
+        if fmt.use_rich:
+            fmt.print(f"  [red]v DECLINING[/red] (strength: {result.trend_strength:.0%})")
+        else:
+            fmt.print(f"  v DECLINING (strength: {result.trend_strength:.0%})")
+    else:
+        if fmt.use_rich:
+            fmt.print(f"  [yellow]- STABLE[/yellow] (consistency: {result.trend_strength:.0%})")
+        else:
+            fmt.print(f"  - STABLE (consistency: {result.trend_strength:.0%})")
+
+    fmt.print("")
+    fmt.print(f"  {result.summary}")
+    fmt.print("")
+
+    # ASCII Graph (if enabled)
+    if (graph or enhanced) and enhanced_result:
+        fmt.print_line("-", 60)
+        fmt.print("HEALTH TREND GRAPH:")
+        fmt.print("")
+        for line in enhanced_result.graph_lines:
+            fmt.print(f"  {line}")
+        fmt.print("")
+
+    # Health metrics
+    fmt.print_line("-", 60)
+    fmt.print("HEALTH METRICS:")
+    fmt.print(f"  First scan:  {result.first_health}")
+    fmt.print(f"  Latest:      {result.latest_health}")
+    fmt.print(f"  Best:        {result.best_health}")
+    fmt.print(f"  Worst:       {result.worst_health}")
+    fmt.print(f"  Average:     {result.avg_health:.1f}")
+
+    # Additional metrics for enhanced mode
+    if enhanced and enhanced_result:
+        fmt.print("")
+        fmt.print(f"  Consistency: {enhanced_result.consistency_score:.0%}")
+        fmt.print(f"  Recoveries:  {enhanced_result.recovery_count}")
+        fmt.print(f"  Plateaus:    {enhanced_result.plateau_count}")
+        if enhanced_result.predicted_next_health:
+            fmt.print(f"  Predicted next: {enhanced_result.predicted_next_health:.0f}")
+        if enhanced_result.days_to_grade_a is not None:
+            fmt.print(f"  Est. days to Grade A: ~{enhanced_result.days_to_grade_a}")
+
+    fmt.print("")
+
+    # Change metrics
+    fmt.print_line("-", 60)
+    fmt.print("CHANGE METRICS:")
+    fmt.print(f"  Avg change per version:  {result.avg_delta_per_version:+.1f}")
+    fmt.print(f"  Recent momentum:         {result.recent_momentum:+.1f}")
+    fmt.print(f"  Biggest improvement:     +{result.biggest_improvement}")
+    fmt.print(f"  Biggest regression:      -{result.biggest_regression}")
+    fmt.print("")
+
+    # Milestones (if enabled)
+    if (milestones or enhanced) and enhanced_result and enhanced_result.milestones:
+        fmt.print_line("-", 60)
+        fmt.print("MILESTONES:")
+        fmt.print("")
+
+        # Group by type for cleaner display
+        milestone_icons = {
+            'first_a': '[A]',
+            'new_best': '[+]',
+            'major_improvement': '[^]',
+            'major_regression': '[v]',
+            'recovery': '[~]'
+        }
+
+        for m in enhanced_result.milestones[-10:]:  # Last 10 milestones
+            icon = milestone_icons.get(m.milestone_type, '[*]')
+            if fmt.use_rich:
+                if m.milestone_type in ('first_a', 'new_best', 'major_improvement', 'recovery'):
+                    color = 'green'
+                else:
+                    color = 'red'
+                fmt.print(f"  [{color}]{icon}[/{color}] {m.als_filename[:25]:25} {m.description}")
+            else:
+                fmt.print(f"  {icon} {m.als_filename[:25]:25} {m.description}")
+
+        if len(enhanced_result.milestones) > 10:
+            fmt.print(f"  ... and {len(enhanced_result.milestones) - 10} earlier milestones")
+        fmt.print("")
+
+    # Timeline (last 10 versions) - skip if graph is shown
+    if not graph and not enhanced:
+        fmt.print_line("-", 60)
+        fmt.print(f"TIMELINE ({result.total_versions} versions):")
+        fmt.print("")
+
+        display_timeline = result.timeline[-10:] if len(result.timeline) > 10 else result.timeline
+        if len(result.timeline) > 10:
+            fmt.print(f"  (showing last 10 of {len(result.timeline)})")
+            fmt.print("")
+
+        for point in display_timeline:
+            delta_str = f"{point.delta_from_previous:+d}" if point.delta_from_previous != 0 else " 0"
+            if fmt.use_rich:
+                if point.delta_from_previous > 0:
+                    delta_color = 'green'
+                elif point.delta_from_previous < 0:
+                    delta_color = 'red'
+                else:
+                    delta_color = 'dim'
+                fmt.print(f"  {point.als_filename:30} [{delta_color}]{delta_str:>4}[/{delta_color}]  health: {point.health_score}")
+            else:
+                fmt.print(f"  {point.als_filename:30} {delta_str:>4}  health: {point.health_score}")
+
+        fmt.print("")
+
+    fmt.print_line("=", 60)
+
+    if not use_enhanced:
+        fmt.print("Tip: Use --graph for visualization, --enhanced for full analysis")
+
+
+@db.command('whatif')
+@click.argument('file_path', type=click.Path(exists=True))
+@click.pass_context
+def db_whatif_cmd(ctx, file_path: str):
+    """Show what-if predictions for a scanned project.
+
+    Predicts the impact of potential changes based on historical
+    patterns across all your projects.
+
+    Shows predictions like:
+      "If you remove Eq8, expect +5.2 health (82% success rate)"
+
+    The file must have been previously scanned with --save.
+
+    Example:
+        als-doctor db whatif "D:/Projects/MySong.als"
+    """
+    fmt = ctx.obj.get('formatter', get_formatter())
+    database = get_db()
+
+    if not database.is_initialized():
+        fmt.error("Database not initialized. Run 'als-doctor db init' first.")
+        raise SystemExit(1)
+
+    result, msg = get_what_if_predictions(file_path)
+
+    if result is None:
+        fmt.error(msg)
+        raise SystemExit(1)
+
+    # Header
+    fmt.header("WHAT-IF PREDICTIONS")
+    fmt.print("")
+    fmt.print(f"File: {Path(result.als_path).name}")
+    fmt.print(f"Current health: {result.current_health}")
+    fmt.print("")
+
+    if not result.has_sufficient_data:
+        fmt.print_line("-", 60)
+        if fmt.use_rich:
+            fmt.print("[yellow]Limited historical data for predictions.[/yellow]")
+        else:
+            fmt.print("Limited historical data for predictions.")
+        fmt.print("")
+        fmt.print("To improve predictions:")
+        fmt.print("  1. Scan more projects: als-doctor scan <dir> --save")
+        fmt.print("  2. Compute changes:    als-doctor db changes <song> --compute")
+        fmt.print("")
+
+    # Top recommendation
+    if result.top_recommendation:
+        fmt.print_line("-", 60)
+        if fmt.use_rich:
+            fmt.print("[green]TOP RECOMMENDATION:[/green]")
+        else:
+            fmt.print("TOP RECOMMENDATION:")
+        fmt.print("")
+        rec = result.top_recommendation
+        fmt.print(f"  {rec.action.upper()} {rec.device_type}")
+        fmt.print(f"  Predicted: +{rec.predicted_health_delta:.1f} health")
+        fmt.print(f"  Confidence: [{rec.confidence}] based on {rec.sample_size} similar changes")
+        fmt.print(f"  Success rate: {rec.success_rate*100:.0f}%")
+        fmt.print("")
+
+    # All predictions
+    if result.predictions:
+        fmt.print_line("-", 60)
+        fmt.print("ALL PREDICTIONS:")
+        fmt.print("")
+
+        for pred in result.predictions:
+            confidence_marker = "**" if pred.confidence == 'HIGH' else "*" if pred.confidence == 'MEDIUM' else "."
+
+            if fmt.use_rich:
+                delta_color = 'green' if pred.predicted_health_delta > 0 else 'red'
+                fmt.print(f"  {confidence_marker} {pred.action.upper():8} {pred.device_type:20} -> [{delta_color}]+{pred.predicted_health_delta:.1f}[/{delta_color}] ({pred.sample_size}x, {pred.success_rate*100:.0f}%)")
+            else:
+                fmt.print(f"  {confidence_marker} {pred.action.upper():8} {pred.device_type:20} -> +{pred.predicted_health_delta:.1f} ({pred.sample_size}x, {pred.success_rate*100:.0f}%)")
+
+        fmt.print("")
+        fmt.print("  Legend: ** HIGH confidence | * MEDIUM | . LOW")
+        fmt.print("")
+    else:
+        fmt.print("No predictions available. Need more historical data.")
+        fmt.print("")
+
+    fmt.print_line("=", 60)
+
+
+@db.command('smart')
+@click.argument('file_path', type=click.Path(exists=True))
+@click.option('--limit', default=10, help='Maximum recommendations to show')
+@click.pass_context
+def db_smart_cmd(ctx, file_path: str, limit: int):
+    """Show smart recommendations using historical intelligence.
+
+    Analyzes a scanned project and prioritizes recommendations based on:
+      - What has helped you before
+      - Historical success rates
+      - Your personal style profile
+
+    Recommendations include confidence levels and predicted impact.
+
+    Example:
+        als-doctor db smart "D:/Projects/MySong.als"
+        als-doctor db smart "D:/Projects/MySong.als" --limit 5
+    """
+    fmt = ctx.obj.get('formatter', get_formatter())
+    database = get_db()
+
+    if not database.is_initialized():
+        fmt.error("Database not initialized. Run 'als-doctor db init' first.")
+        raise SystemExit(1)
+
+    result, msg = smart_diagnose(file_path)
+
+    if result is None:
+        fmt.error(msg)
+        raise SystemExit(1)
+
+    # Header
+    fmt.header("SMART RECOMMENDATIONS")
+    fmt.print("")
+    fmt.print(f"File: {result.als_filename}")
+    fmt.print(f"Health: {result.health_score} ({result.grade})")
+    fmt.print(f"Issues: {result.total_issues} total ({result.critical_count} critical, {result.warning_count} warnings)")
+    fmt.print("")
+
+    # Context
+    fmt.print_line("-", 60)
+    if result.has_sufficient_history:
+        if fmt.use_rich:
+            fmt.print(f"[green]OK[/green] Using intelligence from {result.versions_analyzed} scanned versions")
+        else:
+            fmt.print(f"OK Using intelligence from {result.versions_analyzed} scanned versions")
+    else:
+        if fmt.use_rich:
+            fmt.print(f"[yellow]![/yellow] Limited history ({result.versions_analyzed} versions, need 20+)")
+        else:
+            fmt.print(f"! Limited history ({result.versions_analyzed} versions, need 20+)")
+
+    if result.profile_available:
+        if result.profile_similarity is not None:
+            fmt.print(f"  Profile similarity: {result.profile_similarity}%")
+    else:
+        fmt.print("  No style profile yet (need 3+ Grade A versions)")
+
+    fmt.print("")
+
+    # Recommendations
+    if not result.recommendations:
+        fmt.print("No recommendations - this project looks good!")
+        return
+
+    fmt.print_line("-", 60)
+    fmt.print("PRIORITIZED RECOMMENDATIONS:")
+    fmt.print("")
+
+    for i, rec in enumerate(result.recommendations[:limit], 1):
+        # Priority and confidence indicator
+        if rec.confidence == 'HIGH':
+            conf_marker = "***"
+        elif rec.confidence == 'MEDIUM':
+            conf_marker = "**"
+        else:
+            conf_marker = "*"
+
+        # Severity color
+        if fmt.use_rich:
+            if rec.severity == 'critical':
+                sev_color = 'red'
+            elif rec.severity == 'warning':
+                sev_color = 'yellow'
+            else:
+                sev_color = 'dim'
+
+            fmt.print(f"{i:2}. [{sev_color}][{rec.severity.upper():10}][/{sev_color}] {conf_marker}")
+        else:
+            fmt.print(f"{i:2}. [{rec.severity.upper():10}] {conf_marker}")
+
+        if rec.track_name:
+            fmt.print(f"    Track: {rec.track_name}")
+
+        fmt.print(f"    {rec.description}")
+        fmt.print(f"    -> {rec.recommendation}")
+
+        if rec.helped_before:
+            if fmt.use_rich:
+                fmt.print(f"    [green]History: This fix improved health {rec.times_helped}x (avg +{rec.avg_improvement:.1f})[/green]")
+            else:
+                fmt.print(f"    History: This fix improved health {rec.times_helped}x (avg +{rec.avg_improvement:.1f})")
+        elif rec.confidence_reason:
+            fmt.print(f"    Note: {rec.confidence_reason}")
+
+        fmt.print("")
+
+    if len(result.recommendations) > limit:
+        fmt.print(f"  ... and {len(result.recommendations) - limit} more recommendations")
+        fmt.print(f"  Use --limit {len(result.recommendations)} to see all")
+
+    fmt.print("")
+    fmt.print_line("=", 60)
+
+
+@db.command('recommend')
+@click.argument('file_path', type=click.Path(exists=True))
+@click.option('--limit', default=10, help='Maximum recommendations to show')
+@click.pass_context
+def db_recommend_cmd(ctx, file_path: str, limit: int):
+    """Show personalized recommendations combining global and project patterns.
+
+    Unlike 'smart' which focuses on issue severity, 'recommend' focuses on
+    what has historically improved health scores, with special emphasis on
+    patterns specific to THIS project.
+
+    Recommendations are sourced from:
+      - [project] Patterns specific to this song
+      - [global] Patterns from all your projects
+      - [both] Confirmed by both sources (highest confidence)
+
+    Example:
+        als-doctor db recommend "D:/Projects/MySong.als"
+        als-doctor db recommend "D:/Projects/MySong.als" --limit 5
+    """
+    fmt = ctx.obj.get('formatter', get_formatter())
+    database = get_db()
+
+    if not database.is_initialized():
+        fmt.error("Database not initialized. Run 'als-doctor db init' first.")
+        raise SystemExit(1)
+
+    result, msg = get_personalized_recommendations(file_path)
+
+    if result is None:
+        fmt.error(msg)
+        raise SystemExit(1)
+
+    # Header
+    fmt.header("PERSONALIZED RECOMMENDATIONS")
+    fmt.print("")
+    fmt.print(f"File: {Path(file_path).name}")
+    fmt.print(f"Current Health: {result.current_health} ({result.current_grade})")
+    fmt.print("")
+
+    # Data sources
+    fmt.print_line("-", 60)
+    fmt.print("DATA SOURCES:")
+
+    if result.has_project_history:
+        if fmt.use_rich:
+            fmt.print(f"  [green]OK[/green] Project history: {result.project_changes_count} changes tracked")
+        else:
+            fmt.print(f"  OK Project history: {result.project_changes_count} changes tracked")
+    else:
+        if fmt.use_rich:
+            fmt.print(f"  [dim].[/dim] Project history: insufficient ({result.project_changes_count} changes)")
+        else:
+            fmt.print(f"  . Project history: insufficient ({result.project_changes_count} changes)")
+
+    if result.has_global_history:
+        if fmt.use_rich:
+            fmt.print(f"  [green]OK[/green] Global patterns: {result.global_changes_count} changes analyzed")
+        else:
+            fmt.print(f"  OK Global patterns: {result.global_changes_count} changes analyzed")
+    else:
+        if fmt.use_rich:
+            fmt.print(f"  [dim].[/dim] Global patterns: insufficient ({result.global_changes_count} changes)")
+        else:
+            fmt.print(f"  . Global patterns: insufficient ({result.global_changes_count} changes)")
+
+    fmt.print("")
+
+    # Top recommendation highlight
+    if result.top_recommendation:
+        rec = result.top_recommendation
+        fmt.print_line("-", 60)
+        if fmt.use_rich:
+            fmt.print("[green]TOP RECOMMENDATION[/green]")
+        else:
+            fmt.print("TOP RECOMMENDATION")
+        fmt.print("")
+        fmt.print(f"  {rec.action} {rec.target}")
+        fmt.print(f"  Priority: {rec.priority}/100 | Confidence: {rec.confidence}")
+        fmt.print(f"  Source: {rec.source}")
+        fmt.print(f"  {rec.reasoning}")
+        fmt.print("")
+
+    # All recommendations
+    if not result.recommendations:
+        fmt.print("No recommendations available. Need more change history.")
+        fmt.print("")
+        fmt.print("To build history:")
+        fmt.print("  1. Scan projects: als-doctor scan <dir> --save")
+        fmt.print("  2. Compute changes: als-doctor db changes <song> --compute")
+        return
+
+    fmt.print_line("-", 60)
+    fmt.print("ALL RECOMMENDATIONS:")
+    fmt.print("")
+
+    for i, rec in enumerate(result.recommendations[:limit], 1):
+        # Source badge
+        if rec.source == 'both':
+            source_badge = "[both]" if not fmt.use_rich else "[green][both][/green]"
+        elif rec.source == 'project':
+            source_badge = "[project]" if not fmt.use_rich else "[cyan][project][/cyan]"
+        else:
+            source_badge = "[global]" if not fmt.use_rich else "[dim][global][/dim]"
+
+        # Confidence stars
+        if rec.confidence == 'HIGH':
+            conf = "***"
+        elif rec.confidence == 'MEDIUM':
+            conf = "**"
+        else:
+            conf = "*"
+
+        fmt.print(f"{i:2}. {rec.action} {rec.target} {source_badge} {conf}")
+
+        # Show deltas
+        if rec.source == 'both':
+            fmt.print(f"    Global: avg {rec.global_avg_delta:+.1f} ({rec.global_occurrences}x)")
+            fmt.print(f"    Project: avg {rec.project_avg_delta:+.1f} ({rec.project_occurrences}x)")
+        elif rec.source == 'project':
+            fmt.print(f"    Project: avg {rec.project_avg_delta:+.1f} ({rec.project_occurrences}x)")
+        else:
+            fmt.print(f"    Global: avg {rec.global_avg_delta:+.1f} ({rec.global_occurrences}x)")
+
+        fmt.print("")
+
+    if len(result.recommendations) > limit:
+        fmt.print(f"  ... and {len(result.recommendations) - limit} more")
+        fmt.print(f"  Use --limit {len(result.recommendations)} to see all")
+
+    # Summary
+    fmt.print_line("=", 60)
+    if result.estimated_improvement > 0:
+        if fmt.use_rich:
+            fmt.print(f"[green]Estimated improvement if top 5 applied: +{result.estimated_improvement:.1f} health[/green]")
+        else:
+            fmt.print(f"Estimated improvement if top 5 applied: +{result.estimated_improvement:.1f} health")
+    fmt.print("")
+    fmt.print("Legend: [both]=confirmed by global+project, [project]=this song only, [global]=all projects")
+
+
+@db.command('ref-insights')
+@click.option('--genre', '-g', default=None, help='Filter by genre')
+@click.pass_context
+def db_ref_insights_cmd(ctx, genre: Optional[str]):
+    """Show insights learned from reference comparisons.
+
+    Analyzes your stored reference comparisons to identify:
+    - Common mixing issues across your tracks
+    - Which recommendations tend to help
+    - Genre-specific patterns
+    - Your personal mixing tendencies
+
+    Requires at least 3 stored reference comparisons.
+
+    Example:
+        als-doctor db ref-insights
+        als-doctor db ref-insights --genre trance
+    """
+    fmt = ctx.obj.get('formatter', get_formatter())
+    database = get_db()
+
+    if not database.is_initialized():
+        fmt.error("Database not initialized. Run 'als-doctor db init' first.")
+        raise SystemExit(1)
+
+    result, msg = get_reference_insights(genre=genre)
+
+    if result is None:
+        fmt.error(msg)
+        raise SystemExit(1)
+
+    # Header
+    fmt.header("REFERENCE COMPARISON INSIGHTS")
+    fmt.print("")
+    fmt.print(f"Total comparisons: {result.total_comparisons}")
+    fmt.print(f"Total recommendations tracked: {result.total_recommendations}")
+
+    if genre:
+        fmt.print(f"Filtered by genre: {genre}")
+    fmt.print("")
+
+    # Personal tendency
+    fmt.print_line("-", 60)
+    fmt.print("YOUR MIXING TENDENCIES:")
+    fmt.print("")
+    fmt.print(f"  {result.tendency_summary}")
+    fmt.print("")
+
+    # Common issues
+    if result.common_issues:
+        fmt.print_line("-", 60)
+        fmt.print("COMMON ISSUES FOUND:")
+        fmt.print("")
+
+        for issue in result.common_issues[:7]:
+            stem = issue['stem_type'] or 'overall'
+            issue_type = issue['issue_type']
+            freq = issue['frequency']
+            severity = issue['avg_severity']
+
+            if fmt.use_rich:
+                fmt.print(f"  [yellow]![/yellow] {stem}: {issue_type} issues ({freq}x, avg severity: {severity:.1f})")
+            else:
+                fmt.print(f"  ! {stem}: {issue_type} issues ({freq}x, avg severity: {severity:.1f})")
+
+        fmt.print("")
+
+    # Helpful recommendations
+    if result.helpful_recommendations:
+        fmt.print_line("-", 60)
+        fmt.print("RECOMMENDATION EFFECTIVENESS:")
+        fmt.print("")
+
+        for rec in result.helpful_recommendations[:7]:
+            if rec.times_applied == 0:
+                continue
+
+            success_rate = (rec.times_helped / rec.times_applied * 100) if rec.times_applied > 0 else 0
+
+            # Color based on effectiveness
+            if rec.avg_effect > 0.5:
+                effect_str = "helpful" if not fmt.use_rich else "[green]helpful[/green]"
+            elif rec.avg_effect < -0.5:
+                effect_str = "not helpful" if not fmt.use_rich else "[red]not helpful[/red]"
+            else:
+                effect_str = "mixed results" if not fmt.use_rich else "[yellow]mixed results[/yellow]"
+
+            cat = rec.category
+            stem = f" ({rec.stem_type})" if rec.stem_type else ""
+            fmt.print(f"  {cat}{stem}: {effect_str}")
+            fmt.print(f"    Applied {rec.times_applied}x | Helped {rec.times_helped}x | Success: {success_rate:.0f}%")
+
+        fmt.print("")
+
+    # Genre patterns
+    if result.genre_patterns:
+        fmt.print_line("-", 60)
+        fmt.print("GENRE-SPECIFIC PATTERNS:")
+        fmt.print("")
+
+        for g, patterns in result.genre_patterns.items():
+            loudness = patterns['avg_loudness_diff']
+            balance = patterns['avg_balance_score']
+            count = patterns['count']
+
+            loudness_str = f"{loudness:+.1f}dB" if loudness != 0 else "on target"
+            fmt.print(f"  {g}: avg loudness {loudness_str}, balance {balance:.0f}% ({count} comparisons)")
+
+        fmt.print("")
+
+    if result.total_comparisons < 5:
+        fmt.print_line("=", 60)
+        fmt.print("Tip: Compare more tracks against references to improve insights.")
+        fmt.print("     Use: python analyze.py --audio mix.wav --compare-ref reference.wav")
+
+
+@db.command('ref-history')
+@click.argument('song', required=False, default=None)
+@click.option('--limit', '-n', default=10, help='Number of comparisons to show')
+@click.pass_context
+def db_ref_history_cmd(ctx, song: Optional[str], limit: int):
+    """Show history of reference comparisons.
+
+    Lists stored reference comparisons with similarity scores
+    and key metrics. Optionally filter by project.
+
+    Example:
+        als-doctor db ref-history
+        als-doctor db ref-history "22 Project"
+        als-doctor db ref-history --limit 20
+    """
+    fmt = ctx.obj.get('formatter', get_formatter())
+    database = get_db()
+
+    if not database.is_initialized():
+        fmt.error("Database not initialized. Run 'als-doctor db init' first.")
+        raise SystemExit(1)
+
+    comparisons, msg = get_reference_history(search_term=song, limit=limit)
+
+    if not comparisons:
+        fmt.print("No reference comparisons found.")
+        fmt.print("")
+        fmt.print("To store comparisons:")
+        fmt.print("  python analyze.py --audio mix.wav --compare-ref reference.wav --save")
+        return
+
+    # Header
+    fmt.header("REFERENCE COMPARISON HISTORY")
+    fmt.print("")
+    fmt.print(f"Found {len(comparisons)} comparison(s)")
+    if song:
+        fmt.print(f"Filtered by: {song}")
+    fmt.print("")
+
+    fmt.print_line("-", 70)
+
+    for comp in comparisons:
+        # File info
+        user_name = Path(comp.user_file_path).name[:30]
+        ref_name = comp.reference_name or Path(comp.reference_file_path).name[:25]
+
+        fmt.print(f"{user_name}")
+        fmt.print(f"  vs: {ref_name}")
+
+        # Metrics
+        balance = comp.balance_score
+        loudness = comp.loudness_diff_db
+
+        if fmt.use_rich:
+            if balance >= 80:
+                balance_str = f"[green]{balance:.0f}%[/green]"
+            elif balance >= 60:
+                balance_str = f"[yellow]{balance:.0f}%[/yellow]"
+            else:
+                balance_str = f"[red]{balance:.0f}%[/red]"
+        else:
+            balance_str = f"{balance:.0f}%"
+
+        loudness_str = f"{loudness:+.1f}dB" if loudness != 0 else "0dB"
+
+        fmt.print(f"  Balance: {balance_str} | Loudness diff: {loudness_str}")
+
+        # Stem summary if available
+        if comp.stem_comparisons:
+            stems = list(comp.stem_comparisons.keys())
+            severities = [comp.stem_comparisons[s].get('severity', 'unknown') for s in stems]
+            issues = [s for s, sev in zip(stems, severities) if sev in ('moderate', 'significant')]
+            if issues:
+                fmt.print(f"  Issues in: {', '.join(issues)}")
+
+        # Date
+        date_str = comp.compared_at.strftime("%Y-%m-%d %H:%M")
+        if fmt.use_rich:
+            fmt.print(f"  [dim]{date_str}[/dim]")
+        else:
+            fmt.print(f"  {date_str}")
+
+        fmt.print("")
+
+    fmt.print_line("=", 70)
+    fmt.print(f"Use 'als-doctor db ref-insights' to see patterns learned from these comparisons")
+
+
+@db.command('focus')
+@click.option('--limit', default=5, help='Maximum items per category (default: 5)')
+@click.pass_context
+def db_focus_cmd(ctx, limit: int):
+    """Show what to work on next across all projects.
+
+    Analyzes all projects and categorizes them into actionable groups:
+
+    - Quick Wins: Grade C projects with few critical issues - easy fixes, big impact
+    - Deep Work: Grade D-F projects needing significant attention
+    - Ready to Polish: Grade B projects close to A - final touches
+
+    This helps you prioritize your mixing time effectively.
+
+    Example:
+        als-doctor db focus
+        als-doctor db focus --limit 3
+    """
+    fmt = ctx.obj.get('formatter', get_formatter())
+    database = get_db()
+
+    if not database.is_initialized():
+        fmt.error("Database not initialized. Run 'als-doctor db init' first.")
+        raise SystemExit(1)
+
+    # Get today's focus data using dashboard function
+    try:
+        from dashboard import get_todays_focus, TodaysFocus
+        focus = get_todays_focus()
+    except ImportError:
+        # Fallback implementation if dashboard module isn't available
+        focus = _get_todays_focus_fallback(database)
+
+    if focus.total_suggestions == 0:
+        fmt.print("")
+        fmt.print("No projects need attention right now!")
+        fmt.print("")
+        fmt.print("Either all projects are Grade A, or there's no data yet.")
+        fmt.print("Scan some projects with: als-doctor scan <folder> --save")
+        return
+
+    fmt.header("🎯 WHAT TO WORK ON TODAY")
+    fmt.print("")
+    fmt.print("Based on your project health, here's where to focus your energy:")
+    fmt.print("")
+
+    # Quick Wins
+    if focus.quick_wins:
+        if fmt.use_rich:
+            fmt.print(f"[bold green]⚡ QUICK WINS[/bold green] (small fixes, big impact)")
+        else:
+            fmt.print("⚡ QUICK WINS (small fixes, big impact)")
+        fmt.print_line("-", 50)
+
+        for item in focus.quick_wins[:limit]:
+            score_text = fmt.grade_with_score(item.health_score, item.grade)
+            gain_text = f"+{item.potential_gain}" if item.potential_gain > 0 else ""
+            if fmt.use_rich:
+                fmt.print(f"  • [bold]{item.song_name}[/bold] {score_text}")
+                fmt.print(f"    [dim]{item.reason}[/dim]")
+                if gain_text:
+                    fmt.print(f"    [green]Potential: {gain_text} points[/green]")
+            else:
+                fmt.print(f"  • {item.song_name} {score_text}")
+                fmt.print(f"    {item.reason}")
+                if gain_text:
+                    fmt.print(f"    Potential: {gain_text} points")
+            fmt.print("")
+    else:
+        if fmt.use_rich:
+            fmt.print("[dim]No quick wins available - all easy fixes done![/dim]")
+        else:
+            fmt.print("No quick wins available - all easy fixes done!")
+        fmt.print("")
+
+    # Deep Work
+    if focus.deep_work:
+        if fmt.use_rich:
+            fmt.print(f"[bold yellow]🔨 DEEP WORK[/bold yellow] (needs focused attention)")
+        else:
+            fmt.print("🔨 DEEP WORK (needs focused attention)")
+        fmt.print_line("-", 50)
+
+        for item in focus.deep_work[:limit]:
+            score_text = fmt.grade_with_score(item.health_score, item.grade)
+            gain_text = f"+{item.potential_gain}" if item.potential_gain > 0 else ""
+            if fmt.use_rich:
+                fmt.print(f"  • [bold]{item.song_name}[/bold] {score_text}")
+                fmt.print(f"    [dim]{item.reason}[/dim]")
+                if gain_text:
+                    fmt.print(f"    [yellow]Potential: {gain_text} points[/yellow]")
+            else:
+                fmt.print(f"  • {item.song_name} {score_text}")
+                fmt.print(f"    {item.reason}")
+                if gain_text:
+                    fmt.print(f"    Potential: {gain_text} points")
+            fmt.print("")
+    else:
+        if fmt.use_rich:
+            fmt.print("[dim]No deep work items - nothing in critical condition![/dim]")
+        else:
+            fmt.print("No deep work items - nothing in critical condition!")
+        fmt.print("")
+
+    # Ready to Polish
+    if focus.ready_to_polish:
+        if fmt.use_rich:
+            fmt.print(f"[bold cyan]✨ READY TO POLISH[/bold cyan] (almost there, final touches)")
+        else:
+            fmt.print("✨ READY TO POLISH (almost there, final touches)")
+        fmt.print_line("-", 50)
+
+        for item in focus.ready_to_polish[:limit]:
+            score_text = fmt.grade_with_score(item.health_score, item.grade)
+            gain_text = f"+{item.potential_gain}" if item.potential_gain > 0 else ""
+            if fmt.use_rich:
+                fmt.print(f"  • [bold]{item.song_name}[/bold] {score_text}")
+                fmt.print(f"    [dim]{item.reason}[/dim]")
+                if gain_text:
+                    fmt.print(f"    [cyan]Potential: {gain_text} points[/cyan]")
+            else:
+                fmt.print(f"  • {item.song_name} {score_text}")
+                fmt.print(f"    {item.reason}")
+                if gain_text:
+                    fmt.print(f"    Potential: {gain_text} points")
+            fmt.print("")
+    else:
+        if fmt.use_rich:
+            fmt.print("[dim]No items ready to polish - work on quick wins first![/dim]")
+        else:
+            fmt.print("No items ready to polish - work on quick wins first!")
+        fmt.print("")
+
+    # Summary
+    fmt.print_line("=", 50)
+    fmt.print(f"Total suggestions: {focus.total_suggestions}")
+    fmt.print("")
+    fmt.print("Use 'als-doctor db smart <file>' to get specific recommendations for a project.")
+
+
+def _get_todays_focus_fallback(database):
+    """Fallback implementation if dashboard module isn't available."""
+    from dataclasses import dataclass, field
+    from typing import List, Optional
+
+    @dataclass
+    class WorkItemFallback:
+        project_id: int
+        song_name: str
+        category: str
+        reason: str
+        health_score: int
+        grade: str
+        potential_gain: int
+        days_since_worked: Optional[int] = None
+
+    @dataclass
+    class TodaysFocusFallback:
+        quick_wins: List[WorkItemFallback] = field(default_factory=list)
+        deep_work: List[WorkItemFallback] = field(default_factory=list)
+        ready_to_polish: List[WorkItemFallback] = field(default_factory=list)
+        total_suggestions: int = 0
+
+    conn = database.connection
+    cursor = conn.cursor()
+
+    quick_wins = []
+    deep_work = []
+    ready_to_polish = []
+
+    # Get all projects with their latest version scores
+    cursor.execute("""
+        SELECT p.id, p.song_name, v.health_score, v.grade, v.critical_issues, v.total_issues
+        FROM projects p
+        JOIN versions v ON v.id = (
+            SELECT id FROM versions WHERE project_id = p.id ORDER BY scanned_at DESC LIMIT 1
+        )
+        ORDER BY v.health_score ASC
+    """)
+
+    for row in cursor.fetchall():
+        project_id = row['id']
+        song_name = row['song_name']
+        score = row['health_score']
+        grade = row['grade']
+        critical = row['critical_issues']
+        total_issues = row['total_issues']
+
+        if grade == 'F':
+            potential = min(30, 100 - score)
+            reason = f"{critical} critical issues to fix"
+            deep_work.append(WorkItemFallback(
+                project_id=project_id,
+                song_name=song_name,
+                category='deep_work',
+                reason=reason,
+                health_score=score,
+                grade=grade,
+                potential_gain=potential
+            ))
+        elif grade == 'D':
+            potential = min(25, 60 - score)
+            reason = f"{total_issues} total issues, {critical} critical"
+            deep_work.append(WorkItemFallback(
+                project_id=project_id,
+                song_name=song_name,
+                category='deep_work',
+                reason=reason,
+                health_score=score,
+                grade=grade,
+                potential_gain=potential
+            ))
+        elif grade == 'C':
+            if critical <= 1:
+                potential = min(20, 80 - score)
+                reason = f"Only {critical} critical issue{'s' if critical != 1 else ''}"
+                quick_wins.append(WorkItemFallback(
+                    project_id=project_id,
+                    song_name=song_name,
+                    category='quick_win',
+                    reason=reason,
+                    health_score=score,
+                    grade=grade,
+                    potential_gain=potential
+                ))
+            else:
+                potential = min(20, 80 - score)
+                reason = f"{critical} critical issues need fixing"
+                deep_work.append(WorkItemFallback(
+                    project_id=project_id,
+                    song_name=song_name,
+                    category='deep_work',
+                    reason=reason,
+                    health_score=score,
+                    grade=grade,
+                    potential_gain=potential
+                ))
+        elif grade == 'B':
+            potential = 80 - score
+            if potential > 0:
+                reason = f"Just {potential} points from Grade A"
+                ready_to_polish.append(WorkItemFallback(
+                    project_id=project_id,
+                    song_name=song_name,
+                    category='ready_to_polish',
+                    reason=reason,
+                    health_score=score,
+                    grade=grade,
+                    potential_gain=potential
+                ))
+
+    # Sort by potential gain
+    quick_wins.sort(key=lambda x: x.potential_gain, reverse=True)
+    deep_work.sort(key=lambda x: x.potential_gain, reverse=True)
+    ready_to_polish.sort(key=lambda x: x.potential_gain, reverse=True)
+
+    total = len(quick_wins) + len(deep_work) + len(ready_to_polish)
+
+    return TodaysFocusFallback(
+        quick_wins=quick_wins,
+        deep_work=deep_work,
+        ready_to_polish=ready_to_polish,
+        total_suggestions=total
+    )
 
 
 @db.command('report')
@@ -1648,9 +2886,9 @@ def _display_smart_recommendations(
         helped_count = len([r for r in result.recommendations if r.helped_before])
         if helped_count > 0:
             if fmt.use_rich:
-                fmt.print(f"[green]✓[/green] {helped_count} recommendation(s) based on fixes that worked for you before")
+                fmt.print(f"[green]OK[/green] {helped_count} recommendation(s) based on fixes that worked for you before")
             else:
-                fmt.print(f"✓ {helped_count} recommendation(s) based on fixes that worked for you before")
+                fmt.print(f"OK {helped_count} recommendation(s) based on fixes that worked for you before")
 
 
 def _display_recommendation(rec: SmartRecommendation, fmt: CLIFormatter, verbose: bool):
@@ -1688,9 +2926,9 @@ def _display_recommendation(rec: SmartRecommendation, fmt: CLIFormatter, verbose
             fmt.print(f"      Fix: {rec.recommendation}")
         if rec.helped_before:
             if fmt.use_rich:
-                fmt.print(f"      [green]✓ This type of fix helped {rec.times_helped}x before (avg +{rec.avg_improvement:.1f})[/green]")
+                fmt.print(f"      [green]OK This type of fix helped {rec.times_helped}x before (avg +{rec.avg_improvement:.1f})[/green]")
             else:
-                fmt.print(f"      ✓ This type of fix helped {rec.times_helped}x before (avg +{rec.avg_improvement:.1f})")
+                fmt.print(f"      OK This type of fix helped {rec.times_helped}x before (avg +{rec.avg_improvement:.1f})")
         elif rec.confidence_reason:
             if fmt.use_rich:
                 fmt.print(f"      [dim]{rec.confidence_reason}[/dim]")
@@ -1786,15 +3024,15 @@ def _display_midi_analysis(analysis: MIDIAnalysisResult, fmt: CLIFormatter, verb
         for issue in analysis.clip_issues[:8]:
             severity_color = 'yellow' if issue.severity == 'warning' else 'cyan'
             if fmt.use_rich:
-                fmt.print(f"    [{severity_color}]•[/{severity_color}] {issue.description}")
+                fmt.print(f"    [{severity_color}]-[/{severity_color}] {issue.description}")
             else:
-                fmt.print(f"    • {issue.description}")
+                fmt.print(f"    - {issue.description}")
 
         for issue in analysis.track_issues[:5]:
             if fmt.use_rich:
-                fmt.print(f"    [cyan]•[/cyan] {issue.description}")
+                fmt.print(f"    [cyan]-[/cyan] {issue.description}")
             else:
-                fmt.print(f"    • {issue.description}")
+                fmt.print(f"    - {issue.description}")
 
         total_issues = len(analysis.clip_issues) + len(analysis.track_issues)
         shown = min(8, len(analysis.clip_issues)) + min(5, len(analysis.track_issues))
@@ -2201,7 +3439,7 @@ def compare_template_cmd(ctx, file: str, template: str):
             else:
                 fmt.print(f"  Matching: {len(result.matching_device_chains)} track(s)")
             for track_name in result.matching_device_chains[:5]:
-                fmt.print(f"    ✓ {track_name}")
+                fmt.print(f"    OK {track_name}")
             if len(result.matching_device_chains) > 5:
                 fmt.print(f"    ... and {len(result.matching_device_chains) - 5} more")
 
@@ -2248,7 +3486,7 @@ def compare_template_cmd(ctx, file: str, template: str):
         fmt.print_line("-", 50)
 
         for rec in result.recommendations:
-            fmt.print(f"  • {rec}")
+            fmt.print(f"  - {rec}")
 
         fmt.print("")
 
@@ -2297,8 +3535,13 @@ def _display_template_similarity_gauge(score: int, fmt: CLIFormatter):
               help='Suppress non-essential output')
 @click.option('--no-save', is_flag=True,
               help='Do not save results to database')
+@click.option('--notify', is_flag=True,
+              help='Enable desktop notifications for analysis events')
+@click.option('--notify-level', type=click.Choice(['all', 'important', 'critical']),
+              default='all', help='Filter notifications by importance level')
 @click.pass_context
-def watch_cmd(ctx, folder: str, debounce: float, quiet: bool, no_save: bool):
+def watch_cmd(ctx, folder: str, debounce: float, quiet: bool, no_save: bool,
+              notify: bool, notify_level: str):
     """Watch a folder for .als file changes and auto-analyze.
 
     Monitors the specified folder (recursively) for changes to Ableton Live Set
@@ -2319,6 +3562,8 @@ def watch_cmd(ctx, folder: str, debounce: float, quiet: bool, no_save: bool):
         als-doctor watch "D:/Ableton Projects" --debounce 10
         als-doctor watch "D:/Ableton Projects" --quiet
         als-doctor watch "D:/Ableton Projects" --no-save
+        als-doctor watch "D:/Ableton Projects" --notify
+        als-doctor watch "D:/Ableton Projects" --notify --notify-level important
     """
     fmt = ctx.obj.get('formatter', get_formatter())
     save_to_db = not no_save
@@ -2339,6 +3584,26 @@ def watch_cmd(ctx, folder: str, debounce: float, quiet: bool, no_save: bool):
         fmt.print("Make sure watchdog is installed: pip install watchdog")
         raise SystemExit(1)
 
+    # Set up notifications if enabled
+    notification_manager = None
+    if notify:
+        try:
+            from notifications import (
+                configure_notifications, get_notification_manager,
+                is_plyer_available
+            )
+            if not is_plyer_available():
+                fmt.warning("plyer library not available for notifications.")
+                fmt.print("Install with: pip install plyer")
+            else:
+                notification_manager = configure_notifications(
+                    enabled=True,
+                    level=notify_level,
+                    rate_limit=30
+                )
+        except ImportError as e:
+            fmt.warning(f"Failed to import notifications module: {e}")
+
     folder_path = Path(folder).absolute()
 
     # Display startup info
@@ -2347,10 +3612,15 @@ def watch_cmd(ctx, folder: str, debounce: float, quiet: bool, no_save: bool):
     fmt.print(f"  Folder: {folder_path}")
     fmt.print(f"  Debounce: {debounce}s")
     fmt.print(f"  Save to DB: {'Yes' if save_to_db else 'No'}")
+    fmt.print(f"  Notifications: {'Yes (' + notify_level + ')' if notify else 'No'}")
     fmt.print("")
     fmt.print("Waiting for .als file changes...")
     fmt.print("(Press Ctrl+C to stop)")
     fmt.print_line("-", 50)
+
+    # Send start notification
+    if notification_manager:
+        notification_manager.watch_started(str(folder_path))
 
     # Create and start watcher
     watcher = FolderWatcher(
@@ -2395,6 +3665,13 @@ def watch_cmd(ctx, folder: str, debounce: float, quiet: bool, no_save: bool):
 
         fmt.print("")
         fmt.print(f"Log file: {watcher.log_path}")
+
+    # Send stop notification
+    if notification_manager and stats:
+        notification_manager.watch_stopped(
+            files_analyzed=stats.files_analyzed,
+            uptime=stats.uptime_formatted
+        )
 
 
 # ==================== COACH COMMAND ====================
@@ -2677,8 +3954,12 @@ def schedule_remove_cmd(ctx, schedule_id: str, force: bool):
 @schedule.command('run')
 @click.argument('schedule_id')
 @click.option('--quiet', '-q', is_flag=True, help='Suppress output')
+@click.option('--notify', is_flag=True,
+              help='Send desktop notification when complete')
+@click.option('--notify-level', type=click.Choice(['all', 'important', 'critical']),
+              default='all', help='Filter notifications by importance level')
 @click.pass_context
-def schedule_run_cmd(ctx, schedule_id: str, quiet: bool):
+def schedule_run_cmd(ctx, schedule_id: str, quiet: bool, notify: bool, notify_level: str):
     """Run a scheduled scan immediately.
 
     Executes a specific schedule right now, regardless of whether it's due.
@@ -2687,6 +3968,7 @@ def schedule_run_cmd(ctx, schedule_id: str, quiet: bool):
     Example:
         als-doctor schedule run schedule_abc12345
         als-doctor schedule run "My Projects" --quiet
+        als-doctor schedule run schedule_abc12345 --notify
     """
     fmt = ctx.obj.get('formatter', get_formatter())
 
@@ -2695,6 +3977,20 @@ def schedule_run_cmd(ctx, schedule_id: str, quiet: bool):
     except ImportError as e:
         fmt.error(f"Failed to import scheduler module: {e}")
         raise SystemExit(1)
+
+    # Set up notifications if enabled
+    notification_manager = None
+    if notify:
+        try:
+            from notifications import configure_notifications, is_plyer_available
+            if is_plyer_available():
+                notification_manager = configure_notifications(
+                    enabled=True,
+                    level=notify_level,
+                    rate_limit=30
+                )
+        except ImportError:
+            pass  # Notifications not available
 
     # Check database
     database = get_db()
@@ -2717,15 +4013,34 @@ def schedule_run_cmd(ctx, schedule_id: str, quiet: bool):
 
     if result.success:
         fmt.success(f"Completed: {result.summary}")
+        # Send notification
+        if notification_manager:
+            notification_manager.schedule_complete(
+                schedule_name=sched.name,
+                files_scanned=result.files_scanned if hasattr(result, 'files_scanned') else 0,
+                success=True
+            )
     else:
         fmt.error(f"Failed: {result.error_message}")
+        # Send failure notification
+        if notification_manager:
+            notification_manager.schedule_complete(
+                schedule_name=sched.name,
+                files_scanned=0,
+                success=False,
+                error_message=result.error_message
+            )
         raise SystemExit(1)
 
 
 @schedule.command('run-due')
 @click.option('--quiet', '-q', is_flag=True, help='Suppress output')
+@click.option('--notify', is_flag=True,
+              help='Send desktop notification when complete')
+@click.option('--notify-level', type=click.Choice(['all', 'important', 'critical']),
+              default='all', help='Filter notifications by importance level')
 @click.pass_context
-def schedule_run_due_cmd(ctx, quiet: bool):
+def schedule_run_due_cmd(ctx, quiet: bool, notify: bool, notify_level: str):
     """Run all schedules that are due.
 
     Checks all enabled schedules and runs those that are overdue
@@ -2735,6 +4050,7 @@ def schedule_run_due_cmd(ctx, quiet: bool):
     Example:
         als-doctor schedule run-due
         als-doctor schedule run-due --quiet
+        als-doctor schedule run-due --notify
     """
     fmt = ctx.obj.get('formatter', get_formatter())
 
@@ -2743,6 +4059,20 @@ def schedule_run_due_cmd(ctx, quiet: bool):
     except ImportError as e:
         fmt.error(f"Failed to import scheduler module: {e}")
         raise SystemExit(1)
+
+    # Set up notifications if enabled
+    notification_manager = None
+    if notify:
+        try:
+            from notifications import configure_notifications, is_plyer_available
+            if is_plyer_available():
+                notification_manager = configure_notifications(
+                    enabled=True,
+                    level=notify_level,
+                    rate_limit=30
+                )
+        except ImportError:
+            pass  # Notifications not available
 
     # Check database
     database = get_db()
@@ -2772,6 +4102,15 @@ def schedule_run_due_cmd(ctx, quiet: bool):
             fmt.success(f"Completed: {success_count} schedule(s) run successfully")
         else:
             fmt.warning(f"Completed: {success_count} succeeded, {fail_count} failed")
+
+    # Send summary notification
+    if notification_manager:
+        total_files = sum(getattr(r, 'files_scanned', 0) for r in results)
+        notification_manager.scan_complete(
+            folder_name=f"{len(due_schedules)} schedule(s)",
+            files_scanned=total_files,
+            files_failed=fail_count
+        )
 
     if fail_count > 0:
         raise SystemExit(1)
@@ -3077,6 +4416,125 @@ def _display_preflight_result(result: 'PreflightResult', fmt: 'CLIFormatter'):
         fmt.success("Project is ready for export!")
     else:
         fmt.error(f"Fix {result.failed_count} blocker(s) before exporting.")
+
+
+# ============================================================================
+# Dashboard Command
+# ============================================================================
+
+@cli.command('dashboard')
+@click.option(
+    '--port', '-p',
+    type=int,
+    default=5000,
+    help='Port to run the dashboard on (default: 5000)'
+)
+@click.option(
+    '--no-browser',
+    is_flag=True,
+    default=False,
+    help='Don\'t automatically open browser'
+)
+@click.option(
+    '--host',
+    type=str,
+    default='127.0.0.1',
+    help='Host to bind to (default: 127.0.0.1)'
+)
+@click.option(
+    '--debug',
+    is_flag=True,
+    default=False,
+    help='Enable debug mode'
+)
+@click.option(
+    '--refresh', '-r',
+    type=int,
+    default=30,
+    help='Auto-refresh interval in seconds (default: 30)'
+)
+@click.option(
+    '--no-refresh',
+    is_flag=True,
+    default=False,
+    help='Disable auto-refresh'
+)
+@click.pass_context
+def dashboard_cmd(ctx, port: int, no_browser: bool, host: str, debug: bool,
+                  refresh: int, no_refresh: bool):
+    """Start the local web dashboard.
+
+    Opens an interactive web dashboard in your browser for browsing
+    and managing your project analysis data.
+
+    The dashboard includes:
+      - Health overview with grade distribution
+      - Sortable/filterable project list
+      - Project detail pages with timeline charts
+      - Pattern insights from your history
+
+    Example:
+        als-doctor dashboard
+        als-doctor dashboard --port 8080
+        als-doctor dashboard --no-browser
+        als-doctor dashboard --refresh 60
+    """
+    fmt = ctx.obj.get('formatter', get_formatter())
+
+    # Check if database is initialized
+    database = get_db()
+    if not database.is_initialized():
+        fmt.error("Database not initialized. Run 'als-doctor db init' first.")
+        raise SystemExit(1)
+
+    # Import dashboard module
+    try:
+        from dashboard import run_dashboard, FLASK_AVAILABLE
+
+        if not FLASK_AVAILABLE:
+            fmt.error("Flask is not installed. Install with: pip install flask")
+            raise SystemExit(1)
+
+    except ImportError as e:
+        fmt.error(f"Failed to import dashboard module: {e}")
+        fmt.error("Install Flask with: pip install flask")
+        raise SystemExit(1)
+
+    # Show startup info
+    url = f"http://{host}:{port}"
+    fmt.header("ALS DOCTOR DASHBOARD")
+    fmt.print("")
+    fmt.print(f"Starting dashboard at: {url}")
+    fmt.print("")
+
+    if no_browser:
+        fmt.print("Open the URL in your browser to access the dashboard.")
+    else:
+        fmt.print("Browser will open automatically...")
+
+    fmt.print("")
+    fmt.print("Press Ctrl+C to stop the server.")
+    fmt.print("")
+
+    # Run the dashboard
+    try:
+        run_dashboard(
+            port=port,
+            host=host,
+            debug=debug,
+            no_browser=no_browser,
+            auto_refresh=not no_refresh,
+            refresh_interval=refresh
+        )
+    except KeyboardInterrupt:
+        fmt.print("")
+        fmt.print("Dashboard stopped.")
+    except OSError as e:
+        if "Address already in use" in str(e):
+            fmt.error(f"Port {port} is already in use. Try a different port with --port")
+        else:
+            fmt.error(f"Failed to start dashboard: {e}")
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

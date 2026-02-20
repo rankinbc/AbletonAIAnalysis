@@ -39,5 +39,25 @@ jinja2>=3.1.0
 # File System Monitoring
 watchdog>=3.0.0
 
+# Web Dashboard
+flask>=2.3.0
+
+# Desktop Notifications
+plyer>=2.1.0
+
 # Audio format support (for pydub)
 # Note: Install ffmpeg separately on your system
+
+# Phase 4 - Audio Embeddings (for similarity search)
+# Note: openl3 requires TensorFlow - install TensorFlow first if needed
+openl3>=0.4.0
+
+# Phase 4 - Similarity Index (FAISS for fast nearest-neighbor search)
+# Use faiss-gpu instead if you have CUDA support
+faiss-cpu>=1.7.0
+
+# Phase 5 - Prescriptive Fixes (uses existing numpy/scipy)
+# No additional dependencies required
+
+# Machine Learning utilities
+scikit-learn>=1.2.0

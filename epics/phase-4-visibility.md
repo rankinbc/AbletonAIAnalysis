@@ -41,14 +41,14 @@ The goal is **reducing cognitive load**, not adding more screens. Every visualiz
 **So that** I can quickly scan results without a UI
 
 **Acceptance Criteria:**
-- [ ] All CLI output uses consistent color coding
-- [ ] Health grades colored: A=green, B=cyan, C=yellow, D=orange, F=red
-- [ ] Issue severity colored: Critical=red, Warning=yellow, Suggestion=cyan, Info=white
-- [ ] ASCII progress bars for grade distribution
-- [ ] Tables aligned and readable
-- [ ] `--no-color` flag for plain text output (for piping/logging)
-- [ ] Works in Windows Terminal, PowerShell, and CMD
-- [ ] Graceful fallback if terminal doesn't support ANSI colors
+- [x] All CLI output uses consistent color coding
+- [x] Health grades colored: A=green, B=cyan, C=yellow, D=orange, F=red
+- [x] Issue severity colored: Critical=red, Warning=yellow, Suggestion=cyan, Info=white
+- [x] ASCII progress bars for grade distribution
+- [x] Tables aligned and readable
+- [x] `--no-color` flag for plain text output (for piping/logging)
+- [x] Works in Windows Terminal, PowerShell, and CMD
+- [x] Graceful fallback if terminal doesn't support ANSI colors
 
 **Color Scheme:**
 ```
@@ -84,14 +84,14 @@ Regressions: Red with - prefix
 **So that** I can review results in a browser or share with collaborators
 
 **Acceptance Criteria:**
-- [ ] `als-doctor diagnose <file> --html [output.html]` generates project report
-- [ ] `als-doctor db report <song> --html` generates history report
-- [ ] `als-doctor db report --all --html` generates library overview
-- [ ] Reports saved to `reports/` folder with timestamp by default
-- [ ] Reports are self-contained (inline CSS/JS, no external dependencies)
-- [ ] Mobile-friendly responsive design
-- [ ] Print-friendly stylesheet
-- [ ] Dark mode support (auto-detect OS preference)
+- [x] `als-doctor diagnose <file> --html [output.html]` generates project report
+- [x] `als-doctor db report <song> --html` generates history report
+- [x] `als-doctor db report --all --html` generates library overview
+- [x] Reports saved to `reports/` folder with timestamp by default
+- [x] Reports are self-contained (inline CSS/JS, no external dependencies)
+- [x] Mobile-friendly responsive design
+- [x] Print-friendly stylesheet
+- [x] Dark mode support (auto-detect OS preference)
 
 **Report Types:**
 
@@ -134,15 +134,15 @@ Regressions: Red with - prefix
 **So that** I can identify trends and regression points
 
 **Acceptance Criteria:**
-- [ ] HTML history reports include interactive health timeline
-- [ ] X-axis: scan date/version, Y-axis: health score (0-100)
-- [ ] Hover/click shows: version name, score, grade, issues count, date
-- [ ] Grade zones marked with background colors (A=green zone, F=red zone)
-- [ ] Best version highlighted with star marker
-- [ ] Current/latest version highlighted
-- [ ] Regression points marked (where score dropped significantly)
-- [ ] Can zoom/pan on timeline for projects with many versions
-- [ ] Tooltip shows delta from previous version
+- [x] HTML history reports include interactive health timeline
+- [x] X-axis: scan date/version, Y-axis: health score (0-100)
+- [x] Hover/click shows: version name, score, grade, issues count, date
+- [x] Grade zones marked with background colors (A=green zone, F=red zone)
+- [x] Best version highlighted with star marker
+- [x] Current/latest version highlighted
+- [x] Regression points marked (where score dropped significantly)
+- [x] Can zoom/pan on timeline for projects with many versions
+- [x] Tooltip shows delta from previous version
 
 **Chart Features:**
 ```
@@ -179,13 +179,13 @@ Health Score
 **So that** I have a single place to see all project status
 
 **Acceptance Criteria:**
-- [ ] `als-doctor dashboard` starts local web server
-- [ ] Dashboard accessible at `http://localhost:8080`
-- [ ] `--port N` to specify custom port
-- [ ] `--no-browser` to skip auto-opening browser
-- [ ] `Ctrl+C` gracefully stops server
-- [ ] Auto-refresh when database changes (polling or WebSocket)
-- [ ] Responsive design (works on tablet for studio use)
+- [x] `als-doctor dashboard` starts local web server
+- [x] Dashboard accessible at `http://localhost:8080`
+- [x] `--port N` to specify custom port
+- [x] `--no-browser` to skip auto-opening browser
+- [x] `Ctrl+C` gracefully stops server
+- [x] Auto-refresh when database changes (polling or WebSocket)
+- [x] Responsive design (works on tablet for studio use)
 
 **Pages:**
 
@@ -242,14 +242,14 @@ Health Score
 **So that** I can see exactly what changed
 
 **Acceptance Criteria:**
-- [ ] Dashboard includes comparison page at `/project/<id>/compare`
-- [ ] Dropdown selectors for version A (before) and version B (after)
-- [ ] URL supports direct linking: `/project/22/compare?a=22_2.als&b=22_12.als`
-- [ ] Shows: health delta, grade change, issues added/removed, devices changed
-- [ ] Color-coded diff: green=improvement, red=regression, yellow=neutral
-- [ ] Expandable track-by-track breakdown
-- [ ] Link to open either version's folder in explorer
-- [ ] "Swap A/B" button to reverse comparison
+- [x] Dashboard includes comparison page at `/project/<id>/compare`
+- [x] Dropdown selectors for version A (before) and version B (after)
+- [x] URL supports direct linking: `/project/22/compare?a=22_2.als&b=22_12.als`
+- [x] Shows: health delta, grade change, issues added/removed, devices changed
+- [x] Color-coded diff: green=improvement, red=regression, yellow=neutral
+- [x] Expandable track-by-track breakdown
+- [x] Link to open either version's folder in explorer
+- [x] "Swap A/B" button to reverse comparison
 
 **Layout:**
 ```
@@ -300,16 +300,16 @@ Health Score
 **So that** I can start producing instead of deciding
 
 **Acceptance Criteria:**
-- [ ] Dashboard home prominently features "Today's Focus" section
-- [ ] Three categories with different time commitments:
+- [x] Dashboard home prominently features "Today's Focus" section
+- [x] Three categories with different time commitments:
   - **Quick Wins** (15-30 min): Grade C projects needing 1-2 fixes to reach B
   - **Deep Work** (1-2 hours): Grade D projects with improvement potential
   - **Ready to Polish** (30 min): Grade A/B projects for final touches
-- [ ] Click project to go to detail or start coach mode
-- [ ] "I worked on this" button marks project as touched today
-- [ ] "Not today" button hides project from today's list
-- [ ] Respects user's project number filter (--min-number equivalent)
-- [ ] Refreshes daily or on manual refresh
+- [x] Click project to go to detail or start coach mode
+- [x] "I worked on this" button marks project as touched today
+- [x] "Not today" button hides project from today's list
+- [x] Respects user's project number filter (--min-number equivalent)
+- [x] Refreshes daily or on manual refresh
 
 **Prioritization Algorithm:**
 ```python
@@ -352,15 +352,15 @@ if touched_today:
 **So that** I stay informed without watching the terminal
 
 **Acceptance Criteria:**
-- [ ] Watch mode (3.1) sends notification when analysis completes
-- [ ] Scheduled scan (3.3) sends summary notification
-- [ ] Significant health changes trigger notification (>10 point change)
-- [ ] Notifications show: project name, health score, brief status
-- [ ] Click notification opens dashboard or relevant project
-- [ ] `--notify` flag enables notifications (off by default)
-- [ ] `--notify-level` sets threshold: all, important, critical
-- [ ] Works on Windows 10/11
-- [ ] Rate limited: max 1 notification per 30 seconds
+- [x] Watch mode (3.1) sends notification when analysis completes
+- [x] Scheduled scan (3.3) sends summary notification
+- [x] Significant health changes trigger notification (>10 point change)
+- [x] Notifications show: project name, health score, brief status
+- [x] Click notification opens dashboard or relevant project
+- [x] `--notify` flag enables notifications (off by default)
+- [x] `--notify-level` sets threshold: all, important, critical
+- [x] Works on Windows 10/11
+- [x] Rate limited: max 1 notification per 30 seconds
 
 **Notification Types:**
 

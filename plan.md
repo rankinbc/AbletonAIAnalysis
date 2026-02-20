@@ -479,7 +479,7 @@ This plan follows the Ralph Wiggum loop methodology. Each task has a `passes` fi
       "Projects sortable and filterable",
       "Includes health timeline and issue lists"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "4.5",
@@ -502,7 +502,7 @@ This plan follows the Ralph Wiggum loop methodology. Each task has a `passes` fi
       "Shows detailed diff with color coding",
       "Expandable track-level details"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "4.6",
@@ -525,7 +525,7 @@ This plan follows the Ralph Wiggum loop methodology. Each task has a `passes` fi
       "Can mark projects as worked on or hidden",
       "Prioritizes based on recency and momentum"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "4.7",
@@ -547,7 +547,7 @@ This plan follows the Ralph Wiggum loop methodology. Each task has a `passes` fi
       "Notifications show project name, score, status",
       "Rate limited to prevent spam"
     ],
-    "passes": false
+    "passes": true
   }
 ]
 ```

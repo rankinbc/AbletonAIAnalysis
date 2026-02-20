@@ -5,7 +5,7 @@ A comprehensive tool for analyzing Ableton 11 projects and audio files
 to provide actionable mixing and mastering recommendations.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"  # Added Phase 4 (Embeddings) and Phase 5 (Prescriptive Fixes)
 __author__ = "AI Music Production Assistant"
 
 try:

@@ -44,7 +44,7 @@ AbletonAIAnalysis/
 ├── epics/                             # Implementation plans (read-only reference)
 ├── plan.md                            # Your task queue
 ├── activity.md                        # Your progress log
-└── ralph.sh                           # This loop runner
+└── util/ralph.sh                           # This loop runner
 ```
 
 ## Implementation Guidelines

@@ -61,6 +61,16 @@ class Issue:
     fix_suggestion: str
 
 
+@dataclass
+class UserActivity:
+    """Represents a user work session on a project."""
+    id: int
+    project_id: int
+    worked_at: datetime
+    hidden_until: Optional[datetime] = None
+    notes: Optional[str] = None
+
+
 # SQL Schema
 SCHEMA_SQL = """
 -- Projects table: unique songs identified by folder path
@@ -137,6 +147,61 @@ CREATE TABLE IF NOT EXISTS midi_stats (
     FOREIGN KEY (version_id) REFERENCES versions(id) ON DELETE CASCADE
 );
 
+-- Reference comparisons table: stores comparison results for learning
+CREATE TABLE IF NOT EXISTS reference_comparisons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER,
+    version_id INTEGER,
+    user_file_path TEXT NOT NULL,
+    reference_file_path TEXT NOT NULL,
+    reference_name TEXT,  -- Human-readable name of reference
+    genre TEXT,  -- Genre tag for filtering
+    overall_similarity_score REAL,  -- 0-100 similarity score
+    loudness_diff_db REAL,
+    balance_score REAL,  -- 0-100 mix balance similarity
+    compared_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+    FOREIGN KEY (version_id) REFERENCES versions(id) ON DELETE SET NULL
+);
+
+-- Reference stem comparisons: detailed per-stem data from comparisons
+CREATE TABLE IF NOT EXISTS reference_stem_comparisons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    comparison_id INTEGER NOT NULL,
+    stem_type TEXT NOT NULL,  -- 'vocals', 'drums', 'bass', 'other'
+    rms_diff_db REAL,
+    lufs_diff REAL,
+    spectral_centroid_diff_hz REAL,
+    stereo_width_diff_pct REAL,
+    bass_diff_pct REAL,
+    mid_diff_pct REAL,
+    high_diff_pct REAL,
+    severity TEXT,  -- 'good', 'minor', 'moderate', 'significant'
+    FOREIGN KEY (comparison_id) REFERENCES reference_comparisons(id) ON DELETE CASCADE
+);
+
+-- Reference recommendations: tracks which recommendations from comparisons helped
+CREATE TABLE IF NOT EXISTS reference_recommendations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    comparison_id INTEGER NOT NULL,
+    recommendation TEXT NOT NULL,
+    category TEXT,  -- 'eq', 'dynamics', 'balance', 'stereo'
+    stem_type TEXT,  -- Which stem this applies to
+    was_applied INTEGER DEFAULT 0,  -- 1 if user applied this recommendation
+    helped_score INTEGER,  -- 1 if helped, -1 if hurt, 0 if neutral, NULL if unknown
+    FOREIGN KEY (comparison_id) REFERENCES reference_comparisons(id) ON DELETE CASCADE
+);
+
+-- User activity table: tracks when user worked on projects
+CREATE TABLE IF NOT EXISTS user_activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    worked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    hidden_until TIMESTAMP,  -- Hide from "work on" suggestions until this date
+    notes TEXT,  -- Optional user notes about what they worked on
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_versions_project_id ON versions(project_id);
 CREATE INDEX IF NOT EXISTS idx_versions_als_path ON versions(als_path);
@@ -147,6 +212,10 @@ CREATE INDEX IF NOT EXISTS idx_changes_project_id ON changes(project_id);
 CREATE INDEX IF NOT EXISTS idx_changes_before_version ON changes(before_version_id);
 CREATE INDEX IF NOT EXISTS idx_changes_after_version ON changes(after_version_id);
 CREATE INDEX IF NOT EXISTS idx_midi_stats_version_id ON midi_stats(version_id);
+CREATE INDEX IF NOT EXISTS idx_reference_comparisons_project_id ON reference_comparisons(project_id);
+CREATE INDEX IF NOT EXISTS idx_reference_stem_comparisons_comparison_id ON reference_stem_comparisons(comparison_id);
+CREATE INDEX IF NOT EXISTS idx_user_activity_project_id ON user_activity(project_id);
+CREATE INDEX IF NOT EXISTS idx_user_activity_worked_at ON user_activity(worked_at);
 """
 
 
@@ -1210,6 +1279,18 @@ def generate_grade_bar(count: int, total: int, max_width: int = 20) -> str:
 
 
 @dataclass
+class ChangeImpactAssessment:
+    """Assessment of a change's impact based on historical data."""
+    category: str  # 'helped', 'hurt', 'neutral', 'unknown'
+    confidence: str  # 'HIGH', 'MEDIUM', 'LOW', 'NONE'
+    confidence_score: float  # 0.0 to 1.0
+    historical_occurrences: int  # How many times this change type occurred before
+    historical_avg_delta: float  # Average health delta for this change type
+    historical_success_rate: float  # % of times this change type improved health
+    reasoning: str  # Explanation of the assessment
+
+
+@dataclass
 class VersionChange:
     """A single change between versions."""
     id: int
@@ -1225,6 +1306,10 @@ class VersionChange:
     recorded_at: datetime
     # These are populated for display purposes
     likely_helped: bool = False  # True if change correlates with improvement
+    # Enhanced Phase 2 fields
+    impact_assessment: Optional[ChangeImpactAssessment] = None  # Per-change confidence scoring
+    change_intent: str = 'unknown'  # 'likely_fix' (addresses known issue), 'experiment' (new change), 'unknown'
+    addressed_issue: Optional[str] = None  # Description of issue this change likely addresses
 
 
 @dataclass
@@ -1605,6 +1690,459 @@ def compute_and_store_all_changes(
     )
 
 
+# ==================== PHASE 2: ENHANCED CHANGE IMPACT ASSESSMENT ====================
+
+
+def _assess_change_impact(
+    change_type: str,
+    device_type: Optional[str],
+    health_delta: int,
+    db_path: Optional[Path] = None
+) -> ChangeImpactAssessment:
+    """
+    Assess the impact of a specific change based on historical patterns.
+
+    Uses historical data to determine if this type of change typically
+    helps or hurts health, with confidence scoring.
+
+    Args:
+        change_type: Type of change (e.g., 'device_added', 'device_removed')
+        device_type: Type of device involved (e.g., 'Eq8', 'Compressor')
+        health_delta: The actual health delta for this specific change
+        db_path: Optional custom path for the database
+
+    Returns:
+        ChangeImpactAssessment with categorization and confidence
+    """
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return ChangeImpactAssessment(
+            category='unknown',
+            confidence='NONE',
+            confidence_score=0.0,
+            historical_occurrences=0,
+            historical_avg_delta=0.0,
+            historical_success_rate=0.0,
+            reasoning="Database not initialized"
+        )
+
+    # Query historical data for this change pattern
+    with db.connection() as conn:
+        cursor = conn.execute("""
+            SELECT
+                COUNT(*) as occurrence_count,
+                AVG(health_delta) as avg_delta,
+                SUM(CASE WHEN health_delta > 0 THEN 1 ELSE 0 END) as times_helped,
+                SUM(CASE WHEN health_delta < 0 THEN 1 ELSE 0 END) as times_hurt,
+                SUM(CASE WHEN health_delta = 0 THEN 1 ELSE 0 END) as times_neutral
+            FROM changes
+            WHERE change_type = ? AND (device_type = ? OR (device_type IS NULL AND ? IS NULL))
+        """, (change_type, device_type, device_type))
+
+        row = cursor.fetchone()
+
+    if not row or row['occurrence_count'] == 0:
+        # No historical data - use the actual delta to categorize
+        if health_delta > 2:
+            category = 'helped'
+        elif health_delta < -2:
+            category = 'hurt'
+        else:
+            category = 'neutral'
+
+        return ChangeImpactAssessment(
+            category=category,
+            confidence='NONE',
+            confidence_score=0.0,
+            historical_occurrences=0,
+            historical_avg_delta=0.0,
+            historical_success_rate=0.5,
+            reasoning=f"No historical data. Based on observed delta: {health_delta:+d}"
+        )
+
+    occurrences = row['occurrence_count']
+    avg_delta = row['avg_delta'] or 0.0
+    times_helped = row['times_helped'] or 0
+    times_hurt = row['times_hurt'] or 0
+    times_neutral = row['times_neutral'] or 0
+
+    # Calculate success rate
+    if occurrences > 0:
+        success_rate = times_helped / occurrences
+    else:
+        success_rate = 0.5
+
+    # Determine confidence based on sample size
+    if occurrences >= 10:
+        confidence = 'HIGH'
+        confidence_score = min(1.0, 0.7 + (occurrences - 10) * 0.01)
+    elif occurrences >= 5:
+        confidence = 'MEDIUM'
+        confidence_score = 0.4 + (occurrences - 5) * 0.06
+    elif occurrences >= 2:
+        confidence = 'LOW'
+        confidence_score = 0.1 + (occurrences - 2) * 0.1
+    else:
+        confidence = 'NONE'
+        confidence_score = 0.0
+
+    # Categorize based on historical patterns AND actual outcome
+    # Weight historical patterns more heavily with higher confidence
+    historical_category = 'neutral'
+    if avg_delta > 2:
+        historical_category = 'helped'
+    elif avg_delta < -2:
+        historical_category = 'hurt'
+
+    actual_category = 'neutral'
+    if health_delta > 2:
+        actual_category = 'helped'
+    elif health_delta < -2:
+        actual_category = 'hurt'
+
+    # Combine historical and actual assessment
+    # If they agree, high confidence in the category
+    # If they disagree, lower confidence
+    if historical_category == actual_category:
+        category = historical_category
+        reasoning_prefix = "Consistent with historical pattern"
+    elif confidence in ('HIGH', 'MEDIUM'):
+        # Trust historical pattern more
+        category = historical_category
+        reasoning_prefix = f"Historical pattern suggests '{historical_category}' (actual was '{actual_category}')"
+        confidence_score *= 0.8  # Reduce confidence slightly due to disagreement
+    else:
+        # Trust actual outcome more when low historical data
+        category = actual_category
+        reasoning_prefix = f"Based on actual outcome (limited history)"
+
+    # Build reasoning string
+    device_str = device_type or 'unknown device'
+    action_str = change_type.replace('device_', '').replace('track_', '')
+
+    reasoning = (
+        f"{reasoning_prefix}. "
+        f"Historically, {action_str} {device_str}: "
+        f"{times_helped} helped, {times_hurt} hurt, {times_neutral} neutral "
+        f"(avg {avg_delta:+.1f} health). "
+        f"This instance: {health_delta:+d}."
+    )
+
+    return ChangeImpactAssessment(
+        category=category,
+        confidence=confidence,
+        confidence_score=confidence_score,
+        historical_occurrences=occurrences,
+        historical_avg_delta=avg_delta,
+        historical_success_rate=success_rate,
+        reasoning=reasoning
+    )
+
+
+def _determine_change_intent(
+    change_type: str,
+    track_name: Optional[str],
+    device_name: Optional[str],
+    device_type: Optional[str],
+    before_version_id: int,
+    db_path: Optional[Path] = None
+) -> Tuple[str, Optional[str]]:
+    """
+    Determine the intent behind a change based on issues from the previous version.
+
+    A change is categorized as:
+    - 'likely_fix': The change addresses a known issue from the previous version
+    - 'experiment': The change doesn't address any known issue (user is trying something new)
+    - 'unknown': Cannot determine intent
+
+    Args:
+        change_type: Type of change (device_added, device_removed, etc.)
+        track_name: Track where the change occurred
+        device_name: Name of the device involved
+        device_type: Type/category of device
+        before_version_id: ID of the version before this change
+        db_path: Optional custom path for the database
+
+    Returns:
+        Tuple of (intent: str, addressed_issue: Optional[str])
+    """
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return ('unknown', None)
+
+    # Get issues from the previous version
+    with db.connection() as conn:
+        cursor = conn.execute(
+            "SELECT track_name, category, description, fix_suggestion FROM issues WHERE version_id = ?",
+            (before_version_id,)
+        )
+        issues = cursor.fetchall()
+
+    if not issues:
+        # No issues in previous version - this is an experiment
+        return ('experiment', None)
+
+    # Define issue categories that are addressed by specific change types
+    # device_removed or device_disabled can address: clutter, redundant_effect, wrong_effect
+    # device_enabled can address: nothing typically (usually an experiment)
+    # device_added can address: missing_effect (if we had such a category)
+
+    addressed_issue = None
+
+    for issue in issues:
+        issue_track = issue['track_name']
+        issue_category = issue['category']
+        issue_description = issue['description']
+        fix_suggestion = issue['fix_suggestion'] or ''
+
+        # Check if this change addresses this issue
+        # Track must match (or be a general change)
+        track_matches = (
+            not track_name or
+            not issue_track or
+            track_name.lower() == issue_track.lower() or
+            track_name.lower() in issue_track.lower() or
+            issue_track.lower() in track_name.lower()
+        )
+
+        if not track_matches:
+            continue
+
+        # Check if change type matches issue category
+        is_fix = False
+
+        # Device removal/disable addresses clutter issues
+        if change_type in ('device_removed', 'device_disabled'):
+            if issue_category in ('clutter', 'disabled_device'):
+                is_fix = True
+                addressed_issue = f"Addressed: {issue_description[:80]}"
+            elif issue_category == 'redundant_effect':
+                # Check if the removed device matches the redundant device
+                if device_name and device_name.lower() in issue_description.lower():
+                    is_fix = True
+                    addressed_issue = f"Addressed: {issue_description[:80]}"
+            elif issue_category == 'wrong_effect':
+                # Check if the removed device was flagged as wrong
+                if device_name and device_name.lower() in issue_description.lower():
+                    is_fix = True
+                    addressed_issue = f"Addressed: {issue_description[:80]}"
+            elif issue_category == 'duplicate':
+                # Removing a duplicate device
+                if device_type and device_type.lower() in issue_description.lower():
+                    is_fix = True
+                    addressed_issue = f"Addressed: {issue_description[:80]}"
+                elif device_name and device_name.lower() in issue_description.lower():
+                    is_fix = True
+                    addressed_issue = f"Addressed: {issue_description[:80]}"
+
+        # Device enabling addresses issues where a device was needed
+        elif change_type == 'device_enabled':
+            # Less common, but could address issues about disabled important effects
+            if 'enable' in fix_suggestion.lower() or 'disabled' in issue_description.lower():
+                if device_name and device_name.lower() in issue_description.lower():
+                    is_fix = True
+                    addressed_issue = f"Addressed: {issue_description[:80]}"
+
+        # Device addition can address suggestions to add effects
+        elif change_type == 'device_added':
+            if 'add' in fix_suggestion.lower() or 'missing' in issue_description.lower():
+                if device_type and device_type.lower() in fix_suggestion.lower():
+                    is_fix = True
+                    addressed_issue = f"Addressed: {issue_description[:80]}"
+
+        # Track removal addresses track-level issues
+        elif change_type == 'track_removed':
+            if issue_track and track_name and track_name.lower() == issue_track.lower():
+                # Removing a problematic track
+                is_fix = True
+                addressed_issue = f"Addressed track issues: {issue_description[:60]}"
+
+        if is_fix:
+            return ('likely_fix', addressed_issue)
+
+    # No matching issues found - this is an experiment
+    return ('experiment', None)
+
+
+def get_project_changes_enhanced(
+    search_term: str,
+    from_version: Optional[str] = None,
+    to_version: Optional[str] = None,
+    db_path: Optional[Path] = None
+) -> Tuple[Optional[ProjectChangesResult], str]:
+    """
+    Get changes between versions with enhanced impact assessment.
+
+    Same as get_project_changes but adds per-change confidence scoring
+    and more accurate categorization based on historical patterns.
+
+    Args:
+        search_term: Song name or partial match
+        from_version: Optional specific starting version filename
+        to_version: Optional specific ending version filename
+        db_path: Optional custom path for the database
+
+    Returns:
+        Tuple of (ProjectChangesResult or None, message)
+    """
+    # Get base changes
+    result, message = get_project_changes(search_term, from_version, to_version, db_path)
+
+    if result is None:
+        return (result, message)
+
+    # Enhance each change with impact assessment and intent detection
+    for comparison in result.comparisons:
+        for change in comparison.changes:
+            # Add impact assessment
+            assessment = _assess_change_impact(
+                change.change_type,
+                change.device_type,
+                change.health_delta,
+                db_path
+            )
+            change.impact_assessment = assessment
+
+            # Update likely_helped based on assessment
+            change.likely_helped = assessment.category == 'helped'
+
+            # Determine change intent (likely_fix vs experiment)
+            intent, addressed_issue = _determine_change_intent(
+                change.change_type,
+                change.track_name,
+                change.device_name,
+                change.device_type,
+                change.before_version_id,
+                db_path
+            )
+            change.change_intent = intent
+            change.addressed_issue = addressed_issue
+
+    return (result, "OK")
+
+
+@dataclass
+class ChangePattern:
+    """A learned pattern about what changes help or hurt health."""
+    change_type: str
+    device_type: Optional[str]
+    device_name_pattern: Optional[str]  # For specific device names (e.g., "Reverb", "Compressor")
+
+    # Statistics
+    total_occurrences: int
+    times_helped: int
+    times_hurt: int
+    times_neutral: int
+    avg_health_delta: float
+    std_deviation: float  # Consistency of impact
+
+    # Contextual factors
+    best_context: Optional[str]  # When this change works best (e.g., "after mixing", "during cleanup")
+    worst_context: Optional[str]  # When this change tends to fail
+
+    # Recommendation
+    recommendation: str  # e.g., "Usually beneficial", "Exercise caution", "Avoid unless necessary"
+    confidence: str  # 'HIGH', 'MEDIUM', 'LOW'
+
+
+def get_learned_patterns(
+    db_path: Optional[Path] = None,
+    min_occurrences: int = 3
+) -> Tuple[List[ChangePattern], str]:
+    """
+    Get learned patterns from historical change data.
+
+    Analyzes all tracked changes to identify patterns that consistently
+    help or hurt health scores, with statistical confidence.
+
+    Args:
+        db_path: Optional custom path for the database
+        min_occurrences: Minimum occurrences to consider a pattern (default: 3)
+
+    Returns:
+        Tuple of (List[ChangePattern], message)
+    """
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return ([], "Database not initialized")
+
+    patterns = []
+
+    with db.connection() as conn:
+        # Query aggregated statistics by change_type and device_type
+        cursor = conn.execute("""
+            SELECT
+                change_type,
+                device_type,
+                COUNT(*) as total_occurrences,
+                SUM(CASE WHEN health_delta > 2 THEN 1 ELSE 0 END) as times_helped,
+                SUM(CASE WHEN health_delta < -2 THEN 1 ELSE 0 END) as times_hurt,
+                SUM(CASE WHEN health_delta BETWEEN -2 AND 2 THEN 1 ELSE 0 END) as times_neutral,
+                AVG(health_delta) as avg_delta,
+                GROUP_CONCAT(DISTINCT device_name) as device_names
+            FROM changes
+            GROUP BY change_type, device_type
+            HAVING COUNT(*) >= ?
+            ORDER BY ABS(AVG(health_delta)) DESC
+        """, (min_occurrences,))
+
+        for row in cursor.fetchall():
+            total = row['total_occurrences']
+            helped = row['times_helped'] or 0
+            hurt = row['times_hurt'] or 0
+            neutral = row['times_neutral'] or 0
+            avg_delta = row['avg_delta'] or 0.0
+
+            # Calculate success rate
+            success_rate = helped / total if total > 0 else 0
+
+            # Determine confidence
+            if total >= 10:
+                confidence = 'HIGH'
+            elif total >= 5:
+                confidence = 'MEDIUM'
+            else:
+                confidence = 'LOW'
+
+            # Generate recommendation
+            if avg_delta > 3 and success_rate > 0.6:
+                recommendation = "Usually beneficial - consider applying"
+            elif avg_delta > 0 and success_rate > 0.5:
+                recommendation = "Slightly beneficial on average"
+            elif avg_delta < -3 and success_rate < 0.4:
+                recommendation = "Often harmful - avoid unless necessary"
+            elif avg_delta < 0 and success_rate < 0.5:
+                recommendation = "Exercise caution - mixed results"
+            else:
+                recommendation = "Neutral impact - depends on context"
+
+            # Parse device names for pattern
+            device_names = row['device_names'] or ''
+            device_list = [d.strip() for d in device_names.split(',') if d.strip()][:5]
+            device_name_pattern = ', '.join(device_list) if device_list else None
+
+            patterns.append(ChangePattern(
+                change_type=row['change_type'],
+                device_type=row['device_type'],
+                device_name_pattern=device_name_pattern,
+                total_occurrences=total,
+                times_helped=helped,
+                times_hurt=hurt,
+                times_neutral=neutral,
+                avg_health_delta=avg_delta,
+                std_deviation=0.0,  # Could calculate if needed
+                best_context=None,  # Future enhancement
+                worst_context=None,  # Future enhancement
+                recommendation=recommendation,
+                confidence=confidence
+            ))
+
+    return (patterns, f"Found {len(patterns)} learned patterns")
+
+
 # ==================== INSIGHTS: CORRELATE CHANGES WITH OUTCOMES ====================
 
 
@@ -1805,6 +2343,763 @@ def get_insights(db_path: Optional[Path] = None) -> Tuple[Optional[InsightsResul
             insufficient_data=False,
             message="OK"
         ), "OK")
+
+
+# ==================== PHASE 2: TREND ANALYSIS ====================
+
+
+@dataclass
+class TrendPoint:
+    """A single point in the health trend timeline."""
+    version_id: int
+    als_filename: str
+    health_score: int
+    scanned_at: datetime
+    delta_from_previous: int  # Change from previous version
+
+
+@dataclass
+class ProjectTrend:
+    """Trend analysis for a project over time."""
+    project_id: int
+    song_name: str
+    total_versions: int
+
+    # Trajectory
+    trend_direction: str  # 'improving', 'stable', 'declining'
+    trend_strength: float  # 0-1, how strong the trend is
+
+    # Timeline data
+    first_health: int
+    latest_health: int
+    best_health: int
+    worst_health: int
+    avg_health: float
+
+    # Key changes
+    biggest_improvement: int  # Largest positive delta
+    biggest_regression: int  # Largest negative delta (stored as positive)
+
+    # Velocity
+    avg_delta_per_version: float  # Average health change between versions
+    recent_momentum: float  # Average delta in last 3 versions
+
+    # Timeline
+    timeline: List[TrendPoint]
+
+    # Interpretation
+    summary: str  # Human-readable summary
+
+
+def analyze_project_trend(
+    search_term: str,
+    db_path: Optional[Path] = None
+) -> Tuple[Optional[ProjectTrend], str]:
+    """
+    Analyze the health trend of a project over time.
+
+    Determines if the project is improving, stable, or declining based
+    on version history.
+
+    Args:
+        search_term: Song name or partial match
+        db_path: Optional custom path for the database
+
+    Returns:
+        Tuple of (ProjectTrend or None, message)
+    """
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return (None, "Database not initialized. Run 'als-doctor db init' first.")
+
+    # Find the project
+    match = find_project_by_name(search_term, db_path)
+
+    if not match:
+        return (None, f"No project found matching '{search_term}'")
+
+    project_id, song_name = match
+
+    with db.connection() as conn:
+        # Get all versions ordered by scan date
+        cursor = conn.execute("""
+            SELECT id, als_filename, health_score, scanned_at
+            FROM versions
+            WHERE project_id = ?
+            ORDER BY scanned_at ASC, id ASC
+        """, (project_id,))
+
+        versions = cursor.fetchall()
+
+    if len(versions) < 2:
+        return (None, f"Need at least 2 versions for trend analysis. '{song_name}' has {len(versions)}.")
+
+    # Build timeline
+    timeline = []
+    deltas = []
+
+    for i, v in enumerate(versions):
+        scanned_at = v['scanned_at']
+        if isinstance(scanned_at, str):
+            scanned_at = datetime.fromisoformat(scanned_at)
+
+        if i == 0:
+            delta = 0
+        else:
+            delta = v['health_score'] - versions[i-1]['health_score']
+            deltas.append(delta)
+
+        timeline.append(TrendPoint(
+            version_id=v['id'],
+            als_filename=v['als_filename'],
+            health_score=v['health_score'],
+            scanned_at=scanned_at,
+            delta_from_previous=delta
+        ))
+
+    # Calculate metrics
+    health_scores = [v['health_score'] for v in versions]
+    first_health = health_scores[0]
+    latest_health = health_scores[-1]
+    best_health = max(health_scores)
+    worst_health = min(health_scores)
+    avg_health = sum(health_scores) / len(health_scores)
+
+    # Calculate deltas
+    avg_delta = sum(deltas) / len(deltas) if deltas else 0
+    recent_deltas = deltas[-3:] if len(deltas) >= 3 else deltas
+    recent_momentum = sum(recent_deltas) / len(recent_deltas) if recent_deltas else 0
+
+    # Find biggest swings
+    biggest_improvement = max(deltas) if deltas else 0
+    biggest_regression = abs(min(deltas)) if deltas else 0
+
+    # Determine trend direction
+    if avg_delta > 2:
+        trend_direction = 'improving'
+        trend_strength = min(1.0, avg_delta / 10)
+    elif avg_delta < -2:
+        trend_direction = 'declining'
+        trend_strength = min(1.0, abs(avg_delta) / 10)
+    else:
+        trend_direction = 'stable'
+        trend_strength = 1.0 - min(1.0, abs(avg_delta) / 2)
+
+    # Generate summary
+    total_change = latest_health - first_health
+    if trend_direction == 'improving':
+        summary = f"Good progress! Health improved {first_health} ->{latest_health} (+{total_change}) over {len(versions)} versions."
+        if recent_momentum > avg_delta:
+            summary += " Recent momentum is strong."
+    elif trend_direction == 'declining':
+        summary = f"Warning: Health dropped {first_health} ->{latest_health} ({total_change}) over {len(versions)} versions."
+        if recent_momentum < avg_delta:
+            summary += " Recent versions are declining faster."
+    else:
+        summary = f"Stable at ~{avg_health:.0f} health over {len(versions)} versions."
+        if best_health - worst_health > 20:
+            summary += f" Fluctuates between {worst_health}-{best_health}."
+
+    return (ProjectTrend(
+        project_id=project_id,
+        song_name=song_name,
+        total_versions=len(versions),
+        trend_direction=trend_direction,
+        trend_strength=trend_strength,
+        first_health=first_health,
+        latest_health=latest_health,
+        best_health=best_health,
+        worst_health=worst_health,
+        avg_health=avg_health,
+        biggest_improvement=biggest_improvement,
+        biggest_regression=biggest_regression,
+        avg_delta_per_version=avg_delta,
+        recent_momentum=recent_momentum,
+        timeline=timeline,
+        summary=summary
+    ), "OK")
+
+
+# ==================== PHASE 2 ENHANCED: TREND VISUALIZATION & MILESTONES ====================
+
+
+@dataclass
+class Milestone:
+    """A significant event in the project's history."""
+    version_id: int
+    als_filename: str
+    health_score: int
+    milestone_type: str  # 'first_a', 'new_best', 'major_improvement', 'major_regression', 'recovery'
+    description: str
+    scanned_at: datetime
+
+
+@dataclass
+class EnhancedTrendAnalysis:
+    """Extended trend analysis with visualizations and milestones."""
+    # Base trend data
+    trend: ProjectTrend
+
+    # Milestones
+    milestones: List[Milestone]
+
+    # ASCII graph data
+    graph_lines: List[str]  # Pre-rendered ASCII graph
+    graph_width: int
+    graph_height: int
+
+    # Additional metrics
+    consistency_score: float  # How consistent the health changes are (0-1)
+    recovery_count: int  # Number of times health recovered after a drop
+    plateau_count: int  # Number of stable periods
+
+    # Predictions
+    predicted_next_health: float  # Linear prediction for next version
+    days_to_grade_a: Optional[int]  # Estimated days to reach Grade A at current rate
+
+
+def generate_ascii_trend_graph(
+    timeline: List[TrendPoint],
+    width: int = 50,
+    height: int = 10
+) -> List[str]:
+    """
+    Generate an ASCII graph of health scores over time.
+
+    Args:
+        timeline: List of TrendPoint from a ProjectTrend
+        width: Width of the graph in characters
+        height: Height of the graph in characters
+
+    Returns:
+        List of strings representing the graph lines
+    """
+    if not timeline:
+        return ["No data to graph"]
+
+    scores = [p.health_score for p in timeline]
+    min_score = min(scores)
+    max_score = max(scores)
+    score_range = max(max_score - min_score, 1)  # Avoid division by zero
+
+    # Create graph matrix
+    graph = [[' ' for _ in range(width)] for _ in range(height)]
+
+    # Calculate x positions
+    if len(scores) > 1:
+        x_step = (width - 1) / (len(scores) - 1)
+    else:
+        x_step = 0
+
+    # Plot points
+    for i, score in enumerate(scores):
+        x = int(i * x_step) if i < len(scores) else width - 1
+        # Normalize y to graph height (inverted since top is 0)
+        y = height - 1 - int((score - min_score) / score_range * (height - 1))
+        y = max(0, min(height - 1, y))
+
+        # Determine character based on delta
+        if i > 0:
+            delta = scores[i] - scores[i - 1]
+            if delta > 2:
+                char = '▲'
+            elif delta < -2:
+                char = '▼'
+            else:
+                char = '●'
+        else:
+            char = '○'
+
+        graph[y][x] = char
+
+        # Draw connecting lines if there are intermediate x positions
+        if i > 0:
+            prev_x = int((i - 1) * x_step) if i > 1 else 0
+            prev_y = height - 1 - int((scores[i - 1] - min_score) / score_range * (height - 1))
+            prev_y = max(0, min(height - 1, prev_y))
+
+            # Fill in dots between points
+            if abs(x - prev_x) > 1:
+                for mid_x in range(prev_x + 1, x):
+                    # Interpolate y
+                    t = (mid_x - prev_x) / (x - prev_x)
+                    mid_y = int(prev_y + t * (y - prev_y))
+                    mid_y = max(0, min(height - 1, mid_y))
+                    if graph[mid_y][mid_x] == ' ':
+                        graph[mid_y][mid_x] = '·'
+
+    # Build output lines with y-axis labels
+    lines = []
+    lines.append(f"Health {max_score:>3} ┤{''.join(graph[0])}")
+    for i in range(1, height - 1):
+        # Calculate the score for this row
+        row_score = max_score - int((i / (height - 1)) * score_range)
+        if i == height // 2:
+            lines.append(f"       {row_score:>3} ┤{''.join(graph[i])}")
+        else:
+            lines.append(f"           │{''.join(graph[i])}")
+    lines.append(f"       {min_score:>3} └{'─' * width}")
+
+    # X-axis labels
+    first_ver = timeline[0].als_filename[:8] if timeline else ""
+    last_ver = timeline[-1].als_filename[:8] if timeline else ""
+    x_label = f"           {first_ver}" + " " * (width - len(first_ver) - len(last_ver)) + last_ver
+    lines.append(x_label)
+
+    return lines
+
+
+def detect_milestones(timeline: List[TrendPoint]) -> List[Milestone]:
+    """
+    Detect significant milestones in a project's history.
+
+    Milestones include:
+    - First time reaching Grade A (80+)
+    - New best score
+    - Major improvements (+10 or more)
+    - Major regressions (-10 or more)
+    - Recovery after a regression
+
+    Args:
+        timeline: List of TrendPoint from a ProjectTrend
+
+    Returns:
+        List of Milestone objects
+    """
+    if not timeline:
+        return []
+
+    milestones = []
+    best_score = 0
+    reached_grade_a = False
+    last_was_regression = False
+
+    for i, point in enumerate(timeline):
+        # First Grade A
+        if not reached_grade_a and point.health_score >= 80:
+            reached_grade_a = True
+            milestones.append(Milestone(
+                version_id=point.version_id,
+                als_filename=point.als_filename,
+                health_score=point.health_score,
+                milestone_type='first_a',
+                description=f"First Grade A achieved! Score: {point.health_score}",
+                scanned_at=point.scanned_at
+            ))
+
+        # New best score
+        if point.health_score > best_score:
+            if best_score > 0:  # Skip first version
+                milestones.append(Milestone(
+                    version_id=point.version_id,
+                    als_filename=point.als_filename,
+                    health_score=point.health_score,
+                    milestone_type='new_best',
+                    description=f"New personal best! {best_score} ->{point.health_score}",
+                    scanned_at=point.scanned_at
+                ))
+            best_score = point.health_score
+
+        # Major improvement
+        if point.delta_from_previous >= 10:
+            milestones.append(Milestone(
+                version_id=point.version_id,
+                als_filename=point.als_filename,
+                health_score=point.health_score,
+                milestone_type='major_improvement',
+                description=f"Major improvement: +{point.delta_from_previous} points",
+                scanned_at=point.scanned_at
+            ))
+            if last_was_regression:
+                milestones.append(Milestone(
+                    version_id=point.version_id,
+                    als_filename=point.als_filename,
+                    health_score=point.health_score,
+                    milestone_type='recovery',
+                    description="Recovered from previous regression",
+                    scanned_at=point.scanned_at
+                ))
+            last_was_regression = False
+
+        # Major regression
+        if point.delta_from_previous <= -10:
+            milestones.append(Milestone(
+                version_id=point.version_id,
+                als_filename=point.als_filename,
+                health_score=point.health_score,
+                milestone_type='major_regression',
+                description=f"Major regression: {point.delta_from_previous} points",
+                scanned_at=point.scanned_at
+            ))
+            last_was_regression = True
+        elif point.delta_from_previous > 0:
+            last_was_regression = False
+
+    return milestones
+
+
+def get_enhanced_trend_analysis(
+    search_term: str,
+    db_path: Optional[Path] = None,
+    graph_width: int = 50,
+    graph_height: int = 10
+) -> Tuple[Optional[EnhancedTrendAnalysis], str]:
+    """
+    Get enhanced trend analysis with visualizations and milestones.
+
+    Extends the basic trend analysis with:
+    - ASCII visualization of health over time
+    - Milestone detection (achievements, improvements, regressions)
+    - Consistency scoring
+    - Predictive metrics
+
+    Args:
+        search_term: Song name or partial match
+        db_path: Optional custom path for the database
+        graph_width: Width of ASCII graph
+        graph_height: Height of ASCII graph
+
+    Returns:
+        Tuple of (EnhancedTrendAnalysis or None, message)
+    """
+    # Get base trend analysis
+    trend, msg = analyze_project_trend(search_term, db_path)
+    if not trend:
+        return (None, msg)
+
+    # Generate ASCII graph
+    graph_lines = generate_ascii_trend_graph(
+        trend.timeline, graph_width, graph_height
+    )
+
+    # Detect milestones
+    milestones = detect_milestones(trend.timeline)
+
+    # Calculate consistency score
+    # Based on standard deviation of deltas (lower = more consistent)
+    if len(trend.timeline) >= 2:
+        deltas = [p.delta_from_previous for p in trend.timeline[1:]]
+        if deltas:
+            mean_delta = sum(deltas) / len(deltas)
+            variance = sum((d - mean_delta) ** 2 for d in deltas) / len(deltas)
+            std_dev = variance ** 0.5
+            # Normalize: std_dev of 0 = 1.0 consistency, std_dev of 20+ = 0.0
+            consistency_score = max(0, 1 - (std_dev / 20))
+        else:
+            consistency_score = 1.0
+    else:
+        consistency_score = 1.0
+
+    # Count recoveries and plateaus
+    recovery_count = len([m for m in milestones if m.milestone_type == 'recovery'])
+    plateau_count = len([p for p in trend.timeline if abs(p.delta_from_previous) <= 2])
+
+    # Predict next health (simple linear extrapolation)
+    if len(trend.timeline) >= 3:
+        recent = trend.timeline[-3:]
+        recent_avg_delta = sum(p.delta_from_previous for p in recent) / len(recent)
+        predicted_next_health = trend.latest_health + recent_avg_delta
+    else:
+        predicted_next_health = trend.latest_health + trend.avg_delta_per_version
+
+    # Estimate days to Grade A
+    if trend.latest_health < 80 and trend.avg_delta_per_version > 0:
+        points_needed = 80 - trend.latest_health
+        versions_needed = points_needed / trend.avg_delta_per_version
+        # Assume average 3 days between versions (rough estimate)
+        days_to_grade_a = int(versions_needed * 3)
+    else:
+        days_to_grade_a = None
+
+    return (EnhancedTrendAnalysis(
+        trend=trend,
+        milestones=milestones,
+        graph_lines=graph_lines,
+        graph_width=graph_width,
+        graph_height=graph_height,
+        consistency_score=consistency_score,
+        recovery_count=recovery_count,
+        plateau_count=plateau_count,
+        predicted_next_health=predicted_next_health,
+        days_to_grade_a=days_to_grade_a
+    ), "OK")
+
+
+# ==================== PHASE 2: WHAT-IF PREDICTIONS ====================
+
+
+@dataclass
+class WhatIfPrediction:
+    """Prediction of what might happen if a change is made."""
+    action: str  # 'remove', 'add', 'enable', 'disable'
+    device_type: str
+    predicted_health_delta: float  # Expected health change
+    confidence: str  # 'LOW', 'MEDIUM', 'HIGH'
+    sample_size: int  # How many similar changes in history
+    success_rate: float  # What % of similar changes improved health
+    reasoning: str  # Explanation of the prediction
+
+
+@dataclass
+class WhatIfAnalysis:
+    """What-if analysis for a project's current state."""
+    als_path: str
+    current_health: int
+    predictions: List[WhatIfPrediction]
+    top_recommendation: Optional[WhatIfPrediction]  # Highest confidence improvement
+    has_sufficient_data: bool
+
+
+def get_what_if_predictions(
+    als_path: str,
+    db_path: Optional[Path] = None
+) -> Tuple[Optional[WhatIfAnalysis], str]:
+    """
+    Generate what-if predictions for a scanned project.
+
+    Analyzes historical patterns and predicts what would happen if
+    certain devices were removed/disabled based on past outcomes.
+
+    Args:
+        als_path: Path to a scanned .als file
+        db_path: Optional custom path for the database
+
+    Returns:
+        Tuple of (WhatIfAnalysis or None, message)
+    """
+    from pathlib import Path as PathLib
+
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return (None, "Database not initialized. Run 'als-doctor db init' first.")
+
+    # Get the version record
+    version = db.get_version_by_path(als_path)
+    if not version:
+        return (None, f"File not scanned yet: {als_path}")
+
+    # Get historical pattern data
+    predictions = []
+
+    with db.connection() as conn:
+        # Get patterns for device removals that helped
+        cursor = conn.execute("""
+            SELECT
+                device_type,
+                change_type,
+                COUNT(*) as sample_size,
+                AVG(health_delta) as avg_delta,
+                SUM(CASE WHEN health_delta > 0 THEN 1 ELSE 0 END) as improved_count
+            FROM changes
+            WHERE change_type IN ('device_removed', 'device_disabled')
+            GROUP BY device_type, change_type
+            HAVING COUNT(*) >= 2
+            ORDER BY AVG(health_delta) DESC
+        """)
+
+        for row in cursor.fetchall():
+            sample_size = row['sample_size']
+            avg_delta = row['avg_delta']
+            improved_count = row['improved_count'] or 0
+            success_rate = improved_count / sample_size if sample_size > 0 else 0
+
+            if sample_size >= 10:
+                confidence = 'HIGH'
+            elif sample_size >= 5:
+                confidence = 'MEDIUM'
+            else:
+                confidence = 'LOW'
+
+            action = 'remove' if row['change_type'] == 'device_removed' else 'disable'
+            device_type = row['device_type'] or 'unknown'
+
+            # Only show predictions with positive expected delta
+            if avg_delta > 0:
+                reasoning = f"Based on {sample_size} similar changes: {success_rate*100:.0f}% improved health, avg +{avg_delta:.1f}"
+
+                predictions.append(WhatIfPrediction(
+                    action=action,
+                    device_type=device_type,
+                    predicted_health_delta=avg_delta,
+                    confidence=confidence,
+                    sample_size=sample_size,
+                    success_rate=success_rate,
+                    reasoning=reasoning
+                ))
+
+    # Sort by predicted improvement
+    predictions.sort(key=lambda p: (-p.predicted_health_delta, -p.sample_size))
+
+    # Find top recommendation (highest confidence with positive delta)
+    top_recommendation = None
+    for p in predictions:
+        if p.confidence in ('HIGH', 'MEDIUM') and p.predicted_health_delta > 2:
+            top_recommendation = p
+            break
+
+    has_sufficient_data = len(predictions) > 0 and any(p.confidence in ('HIGH', 'MEDIUM') for p in predictions)
+
+    return (WhatIfAnalysis(
+        als_path=als_path,
+        current_health=version.health_score,
+        predictions=predictions[:10],  # Top 10
+        top_recommendation=top_recommendation,
+        has_sufficient_data=has_sufficient_data
+    ), "OK")
+
+
+# ==================== PHASE 2: ENHANCED CHANGE IMPACT ====================
+
+
+@dataclass
+class ChangeImpactPrediction:
+    """Predicted impact of a specific change."""
+    change_type: str
+    device_type: str
+    device_name: str
+    track_name: str
+
+    # Actual outcome (for historical changes)
+    actual_health_delta: Optional[int]
+
+    # Predicted impact (based on history)
+    predicted_delta: float
+    prediction_confidence: str
+
+    # Context
+    similar_changes_count: int
+    similar_success_rate: float
+
+    # Assessment
+    likely_outcome: str  # 'helped', 'hurt', 'neutral', 'unknown'
+    explanation: str
+
+
+def get_change_impact_predictions(
+    search_term: str,
+    db_path: Optional[Path] = None
+) -> Tuple[Optional[List[ChangeImpactPrediction]], str]:
+    """
+    Get enhanced impact predictions for changes between versions.
+
+    This augments the basic change tracking with predicted impacts
+    based on historical patterns, not just observed outcomes.
+
+    Args:
+        search_term: Song name or partial match
+        db_path: Optional custom path for the database
+
+    Returns:
+        Tuple of (List[ChangeImpactPrediction] or None, message)
+    """
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return (None, "Database not initialized.")
+
+    # Find the project
+    match = find_project_by_name(search_term, db_path)
+    if not match:
+        return (None, f"No project found matching '{search_term}'")
+
+    project_id, song_name = match
+
+    # Build pattern lookup from all history
+    pattern_stats = {}
+    with db.connection() as conn:
+        cursor = conn.execute("""
+            SELECT
+                change_type,
+                device_type,
+                COUNT(*) as count,
+                AVG(health_delta) as avg_delta,
+                SUM(CASE WHEN health_delta > 0 THEN 1 ELSE 0 END) as helped
+            FROM changes
+            GROUP BY change_type, device_type
+            HAVING COUNT(*) >= 2
+        """)
+
+        for row in cursor.fetchall():
+            key = (row['change_type'], row['device_type'] or 'unknown')
+            pattern_stats[key] = {
+                'count': row['count'],
+                'avg_delta': row['avg_delta'],
+                'success_rate': (row['helped'] or 0) / row['count']
+            }
+
+    # Get changes for this project
+    with db.connection() as conn:
+        cursor = conn.execute("""
+            SELECT
+                c.change_type, c.device_type, c.device_name, c.track_name,
+                c.health_delta
+            FROM changes c
+            WHERE c.project_id = ?
+            ORDER BY c.recorded_at DESC
+            LIMIT 50
+        """, (project_id,))
+
+        predictions = []
+        for row in cursor.fetchall():
+            change_type = row['change_type']
+            device_type = row['device_type'] or 'unknown'
+
+            # Look up pattern stats
+            key = (change_type, device_type)
+            stats = pattern_stats.get(key, {})
+
+            if stats:
+                predicted_delta = stats['avg_delta']
+                count = stats['count']
+                success_rate = stats['success_rate']
+
+                if count >= 10:
+                    confidence = 'HIGH'
+                elif count >= 5:
+                    confidence = 'MEDIUM'
+                else:
+                    confidence = 'LOW'
+            else:
+                predicted_delta = 0
+                count = 0
+                success_rate = 0.5
+                confidence = 'LOW'
+
+            # Determine likely outcome
+            actual_delta = row['health_delta']
+            if actual_delta is not None:
+                if actual_delta > 2:
+                    likely_outcome = 'helped'
+                elif actual_delta < -2:
+                    likely_outcome = 'hurt'
+                else:
+                    likely_outcome = 'neutral'
+            else:
+                likely_outcome = 'unknown'
+
+            # Generate explanation
+            if stats:
+                explanation = f"Pattern seen {count}x with avg {predicted_delta:+.1f} health ({success_rate*100:.0f}% positive)"
+            else:
+                explanation = "No historical data for this pattern"
+
+            predictions.append(ChangeImpactPrediction(
+                change_type=change_type,
+                device_type=device_type,
+                device_name=row['device_name'] or '',
+                track_name=row['track_name'] or '',
+                actual_health_delta=actual_delta,
+                predicted_delta=predicted_delta,
+                prediction_confidence=confidence,
+                similar_changes_count=count,
+                similar_success_rate=success_rate,
+                likely_outcome=likely_outcome,
+                explanation=explanation
+            ))
+
+    return (predictions, "OK")
 
 
 # ==================== MIDI STATS PERSISTENCE ====================
@@ -3329,3 +4624,1141 @@ def smart_diagnose(
         suggestion_count=suggestion_count,
         profile_similarity=profile_similarity
     ), "OK")
+
+
+# ==================== PHASE 2: PERSONALIZED RECOMMENDATIONS ====================
+
+
+@dataclass
+class ProjectPatterns:
+    """Patterns specific to a single project."""
+    project_id: int
+    song_name: str
+    total_changes: int
+    patterns: List[ChangePattern]
+
+    # Project-specific insights
+    best_change: Optional[ChangePattern]  # Change with highest positive impact
+    worst_change: Optional[ChangePattern]  # Change with highest negative impact
+    project_trend: str  # 'improving', 'stable', 'declining'
+
+
+@dataclass
+class PersonalizedRecommendation:
+    """A recommendation that combines global and project-specific patterns."""
+    action: str  # What to do (e.g., "Remove", "Add", "Disable")
+    target: str  # What to target (e.g., "Compressor", "Reverb")
+    track_name: Optional[str]  # Specific track if applicable
+
+    # Scoring
+    priority: int  # 0-100
+    confidence: str  # 'HIGH', 'MEDIUM', 'LOW'
+
+    # Evidence
+    global_avg_delta: float  # Average health delta globally
+    global_occurrences: int  # How many times seen globally
+    project_avg_delta: Optional[float]  # Average delta for this specific project
+    project_occurrences: int  # How many times seen in this project
+
+    # Source
+    source: str  # 'global', 'project', 'both'
+    reasoning: str  # Explanation of why this is recommended
+
+
+@dataclass
+class PersonalizedRecommendationsResult:
+    """Result of personalized recommendation analysis."""
+    als_path: str
+    current_health: int
+    current_grade: str
+
+    # Recommendations sorted by priority
+    recommendations: List[PersonalizedRecommendation]
+
+    # Context
+    has_project_history: bool  # True if project has change history
+    has_global_history: bool  # True if global patterns available
+    project_changes_count: int
+    global_changes_count: int
+
+    # Summary
+    top_recommendation: Optional[PersonalizedRecommendation]
+    estimated_improvement: float  # Estimated health gain if all recommendations followed
+
+
+def get_project_specific_patterns(
+    search_term: str,
+    db_path: Optional[Path] = None,
+    min_occurrences: int = 2
+) -> Tuple[Optional[ProjectPatterns], str]:
+    """
+    Get patterns specific to a single project.
+
+    Unlike global patterns, these are based only on the history of
+    the specified project, revealing what works for this specific song.
+
+    Args:
+        search_term: Song name or partial match
+        db_path: Optional custom path for the database
+        min_occurrences: Minimum occurrences for a pattern (default: 2)
+
+    Returns:
+        Tuple of (ProjectPatterns or None, message)
+    """
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return (None, "Database not initialized")
+
+    match = find_project_by_name(search_term, db_path)
+    if not match:
+        return (None, f"No project found matching '{search_term}'")
+
+    project_id, song_name = match
+
+    patterns = []
+
+    with db.connection() as conn:
+        # Count total changes for this project
+        cursor = conn.execute(
+            "SELECT COUNT(*) as count FROM changes WHERE project_id = ?",
+            (project_id,)
+        )
+        row = cursor.fetchone()
+        total_changes = row['count'] if row else 0
+
+        if total_changes < min_occurrences:
+            return (ProjectPatterns(
+                project_id=project_id,
+                song_name=song_name,
+                total_changes=total_changes,
+                patterns=[],
+                best_change=None,
+                worst_change=None,
+                project_trend='unknown'
+            ), "Insufficient changes for pattern analysis")
+
+        # Get patterns specific to this project
+        cursor = conn.execute("""
+            SELECT
+                change_type,
+                device_type,
+                COUNT(*) as total_occurrences,
+                SUM(CASE WHEN health_delta > 2 THEN 1 ELSE 0 END) as times_helped,
+                SUM(CASE WHEN health_delta < -2 THEN 1 ELSE 0 END) as times_hurt,
+                SUM(CASE WHEN health_delta BETWEEN -2 AND 2 THEN 1 ELSE 0 END) as times_neutral,
+                AVG(health_delta) as avg_delta,
+                GROUP_CONCAT(DISTINCT device_name) as device_names
+            FROM changes
+            WHERE project_id = ?
+            GROUP BY change_type, device_type
+            HAVING COUNT(*) >= ?
+            ORDER BY ABS(AVG(health_delta)) DESC
+        """, (project_id, min_occurrences))
+
+        best_change = None
+        worst_change = None
+        best_delta = 0
+        worst_delta = 0
+
+        for row in cursor.fetchall():
+            total = row['total_occurrences']
+            helped = row['times_helped'] or 0
+            hurt = row['times_hurt'] or 0
+            neutral = row['times_neutral'] or 0
+            avg_delta = row['avg_delta'] or 0.0
+
+            if total >= 5:
+                confidence = 'HIGH'
+            elif total >= 3:
+                confidence = 'MEDIUM'
+            else:
+                confidence = 'LOW'
+
+            # Generate recommendation
+            success_rate = helped / total if total > 0 else 0
+            if avg_delta > 2 and success_rate > 0.5:
+                recommendation = "Works well for this project"
+            elif avg_delta < -2 and success_rate < 0.5:
+                recommendation = "Tends to cause issues in this project"
+            else:
+                recommendation = "Mixed results in this project"
+
+            device_names = row['device_names'] or ''
+            device_list = [d.strip() for d in device_names.split(',') if d.strip()][:5]
+
+            pattern = ChangePattern(
+                change_type=row['change_type'],
+                device_type=row['device_type'],
+                device_name_pattern=', '.join(device_list) if device_list else None,
+                total_occurrences=total,
+                times_helped=helped,
+                times_hurt=hurt,
+                times_neutral=neutral,
+                avg_health_delta=avg_delta,
+                std_deviation=0.0,
+                best_context=None,
+                worst_context=None,
+                recommendation=recommendation,
+                confidence=confidence
+            )
+            patterns.append(pattern)
+
+            # Track best/worst
+            if avg_delta > best_delta:
+                best_delta = avg_delta
+                best_change = pattern
+            if avg_delta < worst_delta:
+                worst_delta = avg_delta
+                worst_change = pattern
+
+        # Determine project trend
+        cursor = conn.execute("""
+            SELECT AVG(health_delta) as avg_delta
+            FROM changes
+            WHERE project_id = ?
+        """, (project_id,))
+        row = cursor.fetchone()
+        avg_project_delta = row['avg_delta'] if row and row['avg_delta'] else 0
+
+        if avg_project_delta > 2:
+            project_trend = 'improving'
+        elif avg_project_delta < -2:
+            project_trend = 'declining'
+        else:
+            project_trend = 'stable'
+
+    return (ProjectPatterns(
+        project_id=project_id,
+        song_name=song_name,
+        total_changes=total_changes,
+        patterns=patterns,
+        best_change=best_change,
+        worst_change=worst_change,
+        project_trend=project_trend
+    ), "OK")
+
+
+def get_personalized_recommendations(
+    als_path: str,
+    db_path: Optional[Path] = None
+) -> Tuple[Optional[PersonalizedRecommendationsResult], str]:
+    """
+    Get personalized recommendations combining global and project-specific patterns.
+
+    Analyzes a scanned project and generates recommendations based on:
+    1. Global patterns (what works across all your projects)
+    2. Project-specific patterns (what works for this specific song)
+    3. Weighted by confidence and relevance
+
+    Project-specific patterns are weighted more heavily when available,
+    as they reflect what works for this particular song's style.
+
+    Args:
+        als_path: Path to a scanned .als file
+        db_path: Optional custom path for the database
+
+    Returns:
+        Tuple of (PersonalizedRecommendationsResult or None, message)
+    """
+    from pathlib import Path as PathLib
+
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return (None, "Database not initialized")
+
+    # Get version info
+    version = db.get_version_by_path(als_path)
+    if not version:
+        return (None, f"File not scanned: {als_path}")
+
+    # Find project
+    als_path_obj = PathLib(als_path).absolute()
+    folder_path = str(als_path_obj.parent)
+
+    project = db.get_project_by_folder(folder_path)
+    if not project:
+        return (None, "Project not found")
+
+    # Get global patterns
+    global_patterns, _ = get_learned_patterns(db_path, min_occurrences=3)
+
+    # Get project-specific patterns
+    project_patterns_result, _ = get_project_specific_patterns(
+        project.song_name, db_path, min_occurrences=2
+    )
+    project_patterns = project_patterns_result.patterns if project_patterns_result else []
+
+    # Count changes
+    with db.connection() as conn:
+        cursor = conn.execute("SELECT COUNT(*) as count FROM changes")
+        row = cursor.fetchone()
+        global_changes_count = row['count'] if row else 0
+
+        cursor = conn.execute(
+            "SELECT COUNT(*) as count FROM changes WHERE project_id = ?",
+            (project.id,)
+        )
+        row = cursor.fetchone()
+        project_changes_count = row['count'] if row else 0
+
+    recommendations = []
+
+    # Build lookup for project patterns
+    project_pattern_lookup = {}
+    for p in project_patterns:
+        key = (p.change_type, p.device_type)
+        project_pattern_lookup[key] = p
+
+    # Process global patterns and combine with project-specific data
+    for gp in global_patterns:
+        key = (gp.change_type, gp.device_type)
+        pp = project_pattern_lookup.get(key)
+
+        # Determine source
+        if pp:
+            source = 'both'
+            project_avg = pp.avg_health_delta
+            project_occurrences = pp.total_occurrences
+        else:
+            source = 'global'
+            project_avg = None
+            project_occurrences = 0
+
+        # Calculate priority
+        # Weight project-specific data higher when available
+        if source == 'both':
+            # Combine global and project data
+            combined_delta = (gp.avg_health_delta * 0.4) + (pp.avg_health_delta * 0.6)
+            combined_confidence = pp.confidence  # Use project confidence if available
+        else:
+            combined_delta = gp.avg_health_delta
+            combined_confidence = gp.confidence
+
+        # Only recommend changes that help
+        if combined_delta <= 0:
+            continue
+
+        # Map change type to action
+        action_map = {
+            'device_removed': 'Remove',
+            'device_disabled': 'Disable',
+            'device_added': 'Add',
+            'device_enabled': 'Enable',
+            'track_removed': 'Remove track',
+            'track_added': 'Add track'
+        }
+        action = action_map.get(gp.change_type, gp.change_type)
+        target = gp.device_type or 'device'
+
+        # Calculate priority score (0-100)
+        priority = min(100, int(combined_delta * 10 + (gp.total_occurrences * 2)))
+        if source == 'both':
+            priority = min(100, priority + 15)  # Bonus for project-specific confirmation
+
+        # Build reasoning
+        if source == 'both':
+            reasoning = (
+                f"Both global ({gp.total_occurrences}x, avg {gp.avg_health_delta:+.1f}) "
+                f"and project ({pp.total_occurrences}x, avg {pp.avg_health_delta:+.1f}) "
+                f"data suggest this helps."
+            )
+        else:
+            reasoning = (
+                f"Global pattern ({gp.total_occurrences}x, avg {gp.avg_health_delta:+.1f}) "
+                f"suggests this helps. No project-specific data yet."
+            )
+
+        recommendations.append(PersonalizedRecommendation(
+            action=action,
+            target=target,
+            track_name=None,
+            priority=priority,
+            confidence=combined_confidence,
+            global_avg_delta=gp.avg_health_delta,
+            global_occurrences=gp.total_occurrences,
+            project_avg_delta=project_avg,
+            project_occurrences=project_occurrences,
+            source=source,
+            reasoning=reasoning
+        ))
+
+    # Add project-only patterns not in global
+    for pp in project_patterns:
+        key = (pp.change_type, pp.device_type)
+        if key not in [(gp.change_type, gp.device_type) for gp in global_patterns]:
+            if pp.avg_health_delta <= 0:
+                continue
+
+            action_map = {
+                'device_removed': 'Remove',
+                'device_disabled': 'Disable',
+                'device_added': 'Add',
+                'device_enabled': 'Enable',
+                'track_removed': 'Remove track',
+                'track_added': 'Add track'
+            }
+            action = action_map.get(pp.change_type, pp.change_type)
+            target = pp.device_type or 'device'
+
+            priority = min(100, int(pp.avg_health_delta * 8 + (pp.total_occurrences * 3)))
+
+            reasoning = (
+                f"Project-specific pattern ({pp.total_occurrences}x, avg {pp.avg_health_delta:+.1f}). "
+                f"This works well for this particular song."
+            )
+
+            recommendations.append(PersonalizedRecommendation(
+                action=action,
+                target=target,
+                track_name=None,
+                priority=priority,
+                confidence=pp.confidence,
+                global_avg_delta=0.0,
+                global_occurrences=0,
+                project_avg_delta=pp.avg_health_delta,
+                project_occurrences=pp.total_occurrences,
+                source='project',
+                reasoning=reasoning
+            ))
+
+    # Sort by priority
+    recommendations.sort(key=lambda r: -r.priority)
+
+    # Calculate estimated improvement
+    estimated_improvement = sum(
+        r.project_avg_delta if r.project_avg_delta else r.global_avg_delta
+        for r in recommendations[:5]  # Top 5 recommendations
+    )
+
+    top_recommendation = recommendations[0] if recommendations else None
+
+    return (PersonalizedRecommendationsResult(
+        als_path=als_path,
+        current_health=version.health_score,
+        current_grade=version.grade,
+        recommendations=recommendations[:20],  # Limit to top 20
+        has_project_history=project_changes_count >= 2,
+        has_global_history=global_changes_count >= 10,
+        project_changes_count=project_changes_count,
+        global_changes_count=global_changes_count,
+        top_recommendation=top_recommendation,
+        estimated_improvement=estimated_improvement
+    ), "OK")
+
+
+# ==================== PHASE 2: REFERENCE COMPARISON LEARNING ====================
+
+
+@dataclass
+class StoredReferenceComparison:
+    """A stored reference comparison from the database."""
+    id: int
+    project_id: Optional[int]
+    version_id: Optional[int]
+    user_file_path: str
+    reference_file_path: str
+    reference_name: Optional[str]
+    genre: Optional[str]
+    overall_similarity_score: float
+    loudness_diff_db: float
+    balance_score: float
+    compared_at: datetime
+    stem_comparisons: Dict[str, Dict[str, float]]  # stem_type -> metrics
+
+
+@dataclass
+class ReferenceRecommendationPattern:
+    """A learned pattern from reference comparison recommendations."""
+    category: str  # 'eq', 'dynamics', 'balance', 'stereo'
+    stem_type: Optional[str]
+    recommendation_pattern: str  # Summary of the recommendation type
+    times_suggested: int
+    times_applied: int
+    times_helped: int
+    times_hurt: int
+    avg_effect: float  # Average effect on subsequent comparisons
+    confidence: str  # 'HIGH', 'MEDIUM', 'LOW'
+
+
+@dataclass
+class ReferenceInsights:
+    """Insights learned from reference comparisons."""
+    total_comparisons: int
+    total_recommendations: int
+
+    # Common issues found
+    common_issues: List[Dict[str, Any]]  # List of {stem_type, issue_type, frequency, avg_severity}
+
+    # What recommendations helped
+    helpful_recommendations: List[ReferenceRecommendationPattern]
+
+    # Genre-specific insights
+    genre_patterns: Dict[str, Dict[str, float]]  # genre -> {avg_loudness_diff, avg_balance_score}
+
+    # Personal tendencies
+    tendency_summary: str  # e.g., "You tend to have loud bass and quiet mids"
+
+
+def persist_reference_comparison(
+    user_file_path: str,
+    reference_file_path: str,
+    comparison_data: Dict[str, Any],
+    project_id: Optional[int] = None,
+    version_id: Optional[int] = None,
+    reference_name: Optional[str] = None,
+    genre: Optional[str] = None,
+    db_path: Optional[Path] = None
+) -> Tuple[bool, str, Optional[int]]:
+    """
+    Store a reference comparison result in the database for learning.
+
+    Args:
+        user_file_path: Path to the user's mix file
+        reference_file_path: Path to the reference track
+        comparison_data: Dict with comparison metrics (from ReferenceComparator)
+        project_id: Optional project ID to link this comparison to
+        version_id: Optional version ID to link this comparison to
+        reference_name: Human-readable name of the reference
+        genre: Genre tag for filtering/learning
+        db_path: Optional custom path for the database
+
+    Returns:
+        Tuple of (success: bool, message: str, comparison_id: Optional[int])
+    """
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return (False, "Database not initialized", None)
+
+    try:
+        with db.connection() as conn:
+            # Insert main comparison record
+            cursor = conn.execute("""
+                INSERT INTO reference_comparisons (
+                    project_id, version_id, user_file_path, reference_file_path,
+                    reference_name, genre, overall_similarity_score,
+                    loudness_diff_db, balance_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                project_id,
+                version_id,
+                user_file_path,
+                reference_file_path,
+                reference_name,
+                genre,
+                comparison_data.get('overall_balance_score', 0.0),
+                comparison_data.get('overall_loudness_diff_db', 0.0),
+                comparison_data.get('overall_balance_score', 0.0)
+            ))
+            comparison_id = cursor.lastrowid
+
+            # Insert stem comparisons if available
+            stem_comparisons = comparison_data.get('stem_comparisons', {})
+            for stem_type, stem_data in stem_comparisons.items():
+                conn.execute("""
+                    INSERT INTO reference_stem_comparisons (
+                        comparison_id, stem_type, rms_diff_db, lufs_diff,
+                        spectral_centroid_diff_hz, stereo_width_diff_pct,
+                        bass_diff_pct, mid_diff_pct, high_diff_pct, severity
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    comparison_id,
+                    stem_type,
+                    stem_data.get('rms_diff_db', 0.0),
+                    stem_data.get('lufs_diff', 0.0),
+                    stem_data.get('spectral_centroid_diff_hz', 0.0),
+                    stem_data.get('stereo_width_diff_pct', 0.0),
+                    stem_data.get('bass_diff_pct', 0.0),
+                    stem_data.get('mid_diff_pct', 0.0),
+                    stem_data.get('high_diff_pct', 0.0),
+                    stem_data.get('severity', 'minor')
+                ))
+
+            # Insert recommendations for learning
+            recommendations = comparison_data.get('priority_recommendations', [])
+            for rec in recommendations:
+                # Try to categorize the recommendation
+                category = 'other'
+                if 'eq' in rec.lower() or 'frequency' in rec.lower() or 'boost' in rec.lower() or 'cut' in rec.lower():
+                    category = 'eq'
+                elif 'compress' in rec.lower() or 'dynamic' in rec.lower():
+                    category = 'dynamics'
+                elif 'balance' in rec.lower() or 'level' in rec.lower() or 'db' in rec.lower():
+                    category = 'balance'
+                elif 'stereo' in rec.lower() or 'width' in rec.lower() or 'pan' in rec.lower():
+                    category = 'stereo'
+
+                conn.execute("""
+                    INSERT INTO reference_recommendations (
+                        comparison_id, recommendation, category, stem_type
+                    ) VALUES (?, ?, ?, ?)
+                """, (comparison_id, rec, category, None))
+
+        return (True, f"Stored comparison with {len(stem_comparisons)} stem comparisons", comparison_id)
+
+    except Exception as e:
+        return (False, f"Failed to store comparison: {e}", None)
+
+
+def mark_recommendation_applied(
+    recommendation_id: int,
+    helped: Optional[bool] = None,
+    db_path: Optional[Path] = None
+) -> Tuple[bool, str]:
+    """
+    Mark a recommendation as applied and optionally record if it helped.
+
+    Args:
+        recommendation_id: ID of the recommendation to mark
+        helped: True if it helped, False if it hurt, None if neutral/unknown
+        db_path: Optional custom path for the database
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return (False, "Database not initialized")
+
+    helped_score = None
+    if helped is True:
+        helped_score = 1
+    elif helped is False:
+        helped_score = -1
+    elif helped is None:
+        helped_score = 0
+
+    try:
+        with db.connection() as conn:
+            conn.execute("""
+                UPDATE reference_recommendations
+                SET was_applied = 1, helped_score = ?
+                WHERE id = ?
+            """, (helped_score, recommendation_id))
+
+        return (True, "Recommendation marked as applied")
+
+    except Exception as e:
+        return (False, f"Failed to update recommendation: {e}")
+
+
+def get_reference_insights(
+    db_path: Optional[Path] = None,
+    genre: Optional[str] = None
+) -> Tuple[Optional[ReferenceInsights], str]:
+    """
+    Get insights learned from reference comparisons.
+
+    Analyzes stored comparisons to identify:
+    - Common mixing issues
+    - Which recommendations tend to help
+    - Genre-specific patterns
+    - Personal tendencies
+
+    Args:
+        db_path: Optional custom path for the database
+        genre: Optional genre filter
+
+    Returns:
+        Tuple of (ReferenceInsights or None, message)
+    """
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return (None, "Database not initialized")
+
+    with db.connection() as conn:
+        # Count comparisons
+        if genre:
+            cursor = conn.execute(
+                "SELECT COUNT(*) as count FROM reference_comparisons WHERE genre = ?",
+                (genre,)
+            )
+        else:
+            cursor = conn.execute("SELECT COUNT(*) as count FROM reference_comparisons")
+        row = cursor.fetchone()
+        total_comparisons = row['count'] if row else 0
+
+        if total_comparisons < 3:
+            return (ReferenceInsights(
+                total_comparisons=total_comparisons,
+                total_recommendations=0,
+                common_issues=[],
+                helpful_recommendations=[],
+                genre_patterns={},
+                tendency_summary="Insufficient data - need at least 3 reference comparisons"
+            ), "OK")
+
+        # Count recommendations
+        cursor = conn.execute("SELECT COUNT(*) as count FROM reference_recommendations")
+        row = cursor.fetchone()
+        total_recommendations = row['count'] if row else 0
+
+        # Find common issues (stem differences that appear frequently)
+        cursor = conn.execute("""
+            SELECT
+                stem_type,
+                CASE
+                    WHEN ABS(rms_diff_db) > 3 THEN 'level'
+                    WHEN ABS(bass_diff_pct) > 10 THEN 'bass'
+                    WHEN ABS(high_diff_pct) > 10 THEN 'highs'
+                    WHEN ABS(stereo_width_diff_pct) > 15 THEN 'width'
+                    ELSE 'other'
+                END as issue_type,
+                COUNT(*) as frequency,
+                AVG(ABS(rms_diff_db)) as avg_severity
+            FROM reference_stem_comparisons
+            WHERE severity IN ('moderate', 'significant')
+            GROUP BY stem_type, issue_type
+            HAVING COUNT(*) >= 2
+            ORDER BY frequency DESC
+            LIMIT 10
+        """)
+
+        common_issues = []
+        for row in cursor.fetchall():
+            common_issues.append({
+                'stem_type': row['stem_type'],
+                'issue_type': row['issue_type'],
+                'frequency': row['frequency'],
+                'avg_severity': row['avg_severity']
+            })
+
+        # Find helpful recommendations
+        cursor = conn.execute("""
+            SELECT
+                category,
+                stem_type,
+                COUNT(*) as times_suggested,
+                SUM(was_applied) as times_applied,
+                SUM(CASE WHEN helped_score = 1 THEN 1 ELSE 0 END) as times_helped,
+                SUM(CASE WHEN helped_score = -1 THEN 1 ELSE 0 END) as times_hurt
+            FROM reference_recommendations
+            GROUP BY category, stem_type
+            HAVING COUNT(*) >= 2
+            ORDER BY times_helped DESC
+        """)
+
+        helpful_recommendations = []
+        for row in cursor.fetchall():
+            times_suggested = row['times_suggested']
+            times_applied = row['times_applied'] or 0
+            times_helped = row['times_helped'] or 0
+            times_hurt = row['times_hurt'] or 0
+
+            if times_applied > 0:
+                avg_effect = (times_helped - times_hurt) / times_applied
+            else:
+                avg_effect = 0.0
+
+            if times_applied >= 5:
+                confidence = 'HIGH'
+            elif times_applied >= 3:
+                confidence = 'MEDIUM'
+            else:
+                confidence = 'LOW'
+
+            helpful_recommendations.append(ReferenceRecommendationPattern(
+                category=row['category'],
+                stem_type=row['stem_type'],
+                recommendation_pattern=f"{row['category']} adjustments",
+                times_suggested=times_suggested,
+                times_applied=times_applied,
+                times_helped=times_helped,
+                times_hurt=times_hurt,
+                avg_effect=avg_effect,
+                confidence=confidence
+            ))
+
+        # Genre-specific patterns
+        cursor = conn.execute("""
+            SELECT
+                genre,
+                AVG(loudness_diff_db) as avg_loudness_diff,
+                AVG(balance_score) as avg_balance_score,
+                COUNT(*) as count
+            FROM reference_comparisons
+            WHERE genre IS NOT NULL
+            GROUP BY genre
+            HAVING COUNT(*) >= 2
+        """)
+
+        genre_patterns = {}
+        for row in cursor.fetchall():
+            genre_patterns[row['genre']] = {
+                'avg_loudness_diff': row['avg_loudness_diff'],
+                'avg_balance_score': row['avg_balance_score'],
+                'count': row['count']
+            }
+
+        # Calculate personal tendency summary
+        cursor = conn.execute("""
+            SELECT
+                AVG(rms_diff_db) as avg_rms_diff,
+                AVG(bass_diff_pct) as avg_bass_diff,
+                AVG(mid_diff_pct) as avg_mid_diff,
+                AVG(high_diff_pct) as avg_high_diff
+            FROM reference_stem_comparisons
+        """)
+        row = cursor.fetchone()
+
+        tendencies = []
+        if row:
+            if row['avg_bass_diff'] and row['avg_bass_diff'] > 5:
+                tendencies.append("bass tends to be loud")
+            elif row['avg_bass_diff'] and row['avg_bass_diff'] < -5:
+                tendencies.append("bass tends to be quiet")
+
+            if row['avg_mid_diff'] and row['avg_mid_diff'] > 5:
+                tendencies.append("mids tend to be loud")
+            elif row['avg_mid_diff'] and row['avg_mid_diff'] < -5:
+                tendencies.append("mids tend to be quiet")
+
+            if row['avg_high_diff'] and row['avg_high_diff'] > 5:
+                tendencies.append("highs tend to be loud")
+            elif row['avg_high_diff'] and row['avg_high_diff'] < -5:
+                tendencies.append("highs tend to be quiet")
+
+        if tendencies:
+            tendency_summary = f"Compared to references, your mixes: {', '.join(tendencies)}"
+        else:
+            tendency_summary = "Your mixes are generally well-balanced compared to references"
+
+        return (ReferenceInsights(
+            total_comparisons=total_comparisons,
+            total_recommendations=total_recommendations,
+            common_issues=common_issues,
+            helpful_recommendations=helpful_recommendations,
+            genre_patterns=genre_patterns,
+            tendency_summary=tendency_summary
+        ), "OK")
+
+
+def get_reference_history(
+    search_term: Optional[str] = None,
+    limit: int = 20,
+    db_path: Optional[Path] = None
+) -> Tuple[List[StoredReferenceComparison], str]:
+    """
+    Get history of reference comparisons, optionally filtered by project.
+
+    Args:
+        search_term: Optional song name to filter by
+        limit: Maximum number of comparisons to return
+        db_path: Optional custom path for the database
+
+    Returns:
+        Tuple of (List[StoredReferenceComparison], message)
+    """
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return ([], "Database not initialized")
+
+    comparisons = []
+
+    with db.connection() as conn:
+        if search_term:
+            match = find_project_by_name(search_term, db_path)
+            if not match:
+                return ([], f"No project found matching '{search_term}'")
+            project_id, _ = match
+
+            cursor = conn.execute("""
+                SELECT * FROM reference_comparisons
+                WHERE project_id = ?
+                ORDER BY compared_at DESC
+                LIMIT ?
+            """, (project_id, limit))
+        else:
+            cursor = conn.execute("""
+                SELECT * FROM reference_comparisons
+                ORDER BY compared_at DESC
+                LIMIT ?
+            """, (limit,))
+
+        for row in cursor.fetchall():
+            compared_at = row['compared_at']
+            if isinstance(compared_at, str):
+                compared_at = datetime.fromisoformat(compared_at)
+
+            # Get stem comparisons for this comparison
+            stem_cursor = conn.execute("""
+                SELECT * FROM reference_stem_comparisons
+                WHERE comparison_id = ?
+            """, (row['id'],))
+
+            stem_comparisons = {}
+            for stem_row in stem_cursor.fetchall():
+                stem_comparisons[stem_row['stem_type']] = {
+                    'rms_diff_db': stem_row['rms_diff_db'],
+                    'lufs_diff': stem_row['lufs_diff'],
+                    'bass_diff_pct': stem_row['bass_diff_pct'],
+                    'mid_diff_pct': stem_row['mid_diff_pct'],
+                    'high_diff_pct': stem_row['high_diff_pct'],
+                    'severity': stem_row['severity']
+                }
+
+            comparisons.append(StoredReferenceComparison(
+                id=row['id'],
+                project_id=row['project_id'],
+                version_id=row['version_id'],
+                user_file_path=row['user_file_path'],
+                reference_file_path=row['reference_file_path'],
+                reference_name=row['reference_name'],
+                genre=row['genre'],
+                overall_similarity_score=row['overall_similarity_score'] or 0.0,
+                loudness_diff_db=row['loudness_diff_db'] or 0.0,
+                balance_score=row['balance_score'] or 0.0,
+                compared_at=compared_at,
+                stem_comparisons=stem_comparisons
+            ))
+
+    return (comparisons, f"Found {len(comparisons)} comparison(s)")
+
+
+# ============================================================================
+# User Activity Functions (Story 4.6: "What Should I Work On")
+# ============================================================================
+
+
+def record_work_session(
+    project_id: int,
+    notes: Optional[str] = None,
+    hide_days: int = 0,
+    db_path: Optional[Path] = None
+) -> Tuple[bool, str]:
+    """
+    Record that the user worked on a project.
+
+    Args:
+        project_id: ID of the project worked on
+        notes: Optional notes about what was done
+        hide_days: Number of days to hide from suggestions (0 = don't hide)
+        db_path: Optional database path
+
+    Returns:
+        Tuple of (success, message)
+    """
+    db = get_db(db_path)
+
+    try:
+        with db.connection() as conn:
+            # Calculate hidden_until if requested
+            hidden_until = None
+            if hide_days > 0:
+                from datetime import timedelta
+                hidden_until = datetime.now() + timedelta(days=hide_days)
+
+            cursor = conn.execute("""
+                INSERT INTO user_activity (project_id, worked_at, hidden_until, notes)
+                VALUES (?, CURRENT_TIMESTAMP, ?, ?)
+            """, (project_id, hidden_until, notes))
+
+            return (True, f"Recorded work session for project {project_id}")
+    except Exception as e:
+        return (False, f"Error recording work session: {e}")
+
+
+def get_last_worked(
+    project_id: int,
+    db_path: Optional[Path] = None
+) -> Tuple[Optional[datetime], str]:
+    """
+    Get the last time the user worked on a project.
+
+    Args:
+        project_id: ID of the project
+
+    Returns:
+        Tuple of (last_worked_at datetime or None, message)
+    """
+    db = get_db(db_path)
+
+    try:
+        with db.connection() as conn:
+            row = conn.execute("""
+                SELECT worked_at
+                FROM user_activity
+                WHERE project_id = ?
+                ORDER BY worked_at DESC
+                LIMIT 1
+            """, (project_id,)).fetchone()
+
+            if row:
+                worked_at = row['worked_at']
+                if isinstance(worked_at, str):
+                    worked_at = datetime.fromisoformat(worked_at.replace('Z', '+00:00'))
+                return (worked_at, "Found last work session")
+            else:
+                return (None, "No work sessions recorded")
+    except Exception as e:
+        return (None, f"Error getting last worked: {e}")
+
+
+def is_project_hidden(
+    project_id: int,
+    db_path: Optional[Path] = None
+) -> bool:
+    """
+    Check if a project is currently hidden from suggestions.
+
+    Args:
+        project_id: ID of the project
+
+    Returns:
+        True if project should be hidden from suggestions
+    """
+    db = get_db(db_path)
+
+    try:
+        with db.connection() as conn:
+            row = conn.execute("""
+                SELECT hidden_until
+                FROM user_activity
+                WHERE project_id = ?
+                  AND hidden_until IS NOT NULL
+                  AND hidden_until > CURRENT_TIMESTAMP
+                ORDER BY hidden_until DESC
+                LIMIT 1
+            """, (project_id,)).fetchone()
+
+            return row is not None
+    except Exception:
+        return False
+
+
+def get_days_since_worked(
+    project_id: int,
+    db_path: Optional[Path] = None
+) -> Optional[int]:
+    """
+    Get the number of days since the user last worked on a project.
+
+    Args:
+        project_id: ID of the project
+
+    Returns:
+        Number of days since last work, or None if never worked on
+    """
+    last_worked, _ = get_last_worked(project_id, db_path)
+    if last_worked is None:
+        return None
+
+    delta = datetime.now() - last_worked
+    return delta.days
+
+
+def get_work_history(
+    project_id: int,
+    limit: int = 10,
+    db_path: Optional[Path] = None
+) -> List[UserActivity]:
+    """
+    Get the work history for a project.
+
+    Args:
+        project_id: ID of the project
+        limit: Maximum number of entries to return
+
+    Returns:
+        List of UserActivity objects
+    """
+    db = get_db(db_path)
+    activities = []
+
+    try:
+        with db.connection() as conn:
+            rows = conn.execute("""
+                SELECT id, project_id, worked_at, hidden_until, notes
+                FROM user_activity
+                WHERE project_id = ?
+                ORDER BY worked_at DESC
+                LIMIT ?
+            """, (project_id, limit)).fetchall()
+
+            for row in rows:
+                worked_at = row['worked_at']
+                if isinstance(worked_at, str):
+                    worked_at = datetime.fromisoformat(worked_at.replace('Z', '+00:00'))
+
+                hidden_until = row['hidden_until']
+                if hidden_until and isinstance(hidden_until, str):
+                    hidden_until = datetime.fromisoformat(hidden_until.replace('Z', '+00:00'))
+
+                activities.append(UserActivity(
+                    id=row['id'],
+                    project_id=row['project_id'],
+                    worked_at=worked_at,
+                    hidden_until=hidden_until,
+                    notes=row['notes']
+                ))
+
+    except Exception:
+        pass
+
+    return activities
+
+
+def hide_project_temporarily(
+    project_id: int,
+    days: int,
+    db_path: Optional[Path] = None
+) -> Tuple[bool, str]:
+    """
+    Hide a project from work suggestions for a number of days.
+
+    Args:
+        project_id: ID of the project
+        days: Number of days to hide
+
+    Returns:
+        Tuple of (success, message)
+    """
+    from datetime import timedelta
+
+    db = get_db(db_path)
+    hidden_until = datetime.now() + timedelta(days=days)
+
+    try:
+        with db.connection() as conn:
+            conn.execute("""
+                INSERT INTO user_activity (project_id, worked_at, hidden_until, notes)
+                VALUES (?, CURRENT_TIMESTAMP, ?, 'Hidden from suggestions')
+            """, (project_id, hidden_until))
+
+            return (True, f"Project hidden until {hidden_until.strftime('%Y-%m-%d')}")
+    except Exception as e:
+        return (False, f"Error hiding project: {e}")
+
+
+def unhide_project(
+    project_id: int,
+    db_path: Optional[Path] = None
+) -> Tuple[bool, str]:
+    """
+    Remove hide status from a project (make it visible in suggestions again).
+
+    Args:
+        project_id: ID of the project
+
+    Returns:
+        Tuple of (success, message)
+    """
+    db = get_db(db_path)
+
+    try:
+        with db.connection() as conn:
+            # Clear hidden_until for all activity records
+            conn.execute("""
+                UPDATE user_activity
+                SET hidden_until = NULL
+                WHERE project_id = ? AND hidden_until IS NOT NULL
+            """, (project_id,))
+
+            return (True, "Project is now visible in suggestions")
+    except Exception as e:
+        return (False, f"Error unhiding project: {e}")

@@ -149,6 +149,70 @@ Running analysis...
 
 ---
 
+# Ableton Live Control (MCP)
+
+Claude can control Ableton Live via OSC for mixing help.
+
+## Setup (run before asking for mixing help)
+
+1. **Start OSC Daemon** (separate terminal, keep running):
+   ```cmd
+   cd C:\claude-workspace\ableton-live-mcp-server
+   python osc_daemon.py
+   ```
+
+2. **Ableton**: Enable AbletonOSC in Preferences → Link/Tempo/MIDI → Control Surface
+
+3. **Test**: Ask Claude to "get track names" - if it works, you're connected
+
+## Quick Reference
+
+- Claude can: set volumes, panning, sends, effect parameters, enable/disable devices
+- Claude cannot: delete devices, edit MIDI, draw automation
+- If timeout errors: restart OSC daemon
+
+---
+
+# /guide - Feature Navigation Skill
+
+Interactive guide to discover and learn all features of the AbletonAIAnalysis toolkit.
+
+## Invocation
+
+| Command | Action |
+|---------|--------|
+| `/guide` | Show main menu with all features |
+| `/guide <topic>` | Jump to topic via keyword matching |
+| `/guide back` | Go up one level |
+| `/guide home` | Return to main menu |
+
+## Quick Keywords
+
+Type any of these to jump directly:
+- **analyze** - Mixdown/stem/project analysis
+- **stems** - Stem clash detection
+- **als** / **project** - Ableton project analysis (no export needed)
+- **compare** / **reference** - Compare to pro tracks
+- **youtube** - Build reference library from YouTube
+- **gap** - Gap analysis vs reference profile
+- **trance** - Trance authenticity score
+- **ai** / **ml** / **specialist** - AI mixing specialists (17 prompts)
+- **learn** - Style learning system
+- **cluster** - Style clustering
+- **similar** - Similarity search
+- **osc** / **mcp** - Ableton Live control setup
+- **fix** - Fix recommendations
+- **coach** - Interactive coaching mode
+- **preflight** - Export readiness check
+- **batch** - Batch analyze multiple projects
+- **dashboard** - Trends and insights
+
+## Full Documentation
+
+See `docs/ai/skills/guide/guide-skill.md` for complete feature documentation.
+
+---
+
 # Claude Code: Project Organization System
 
 You are the **absolute authority** on file organization in this project. This is **YOUR domain**. The user writes code and creates content, but YOU decide where everything lives, how it's named, and when it needs to be reorganized.
@@ -395,12 +459,6 @@ If you need to reorganize these, you ASK first:
 - If overlap detected: "Wait, we already have `api-patterns.md`. Merge this content or split differently?"
 - Maintain ONE authoritative doc per topic
 - Use cross-references for related topics, not duplication
-
-### Template System
-You maintain templates in `/.claude-system/templates/` for common doc types:
-- `ai-context-template.md` - Structure for AI documentation
-- `human-guide-template.md` - Structure for user guides
-- `report-template.md` - Structure for generated reports
 
 ---
 

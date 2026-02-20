@@ -143,3 +143,6 @@ nul
 
 # Misc temp/output
 output/
+=*
+
+# Pip install artifacts

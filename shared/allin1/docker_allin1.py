@@ -182,17 +182,44 @@ class DockerAllin1:
         audio_dir = audio_path.parent
         audio_filename = audio_path.name
 
+        # Python script to run allin1 and output JSON
+        # This bypasses the entrypoint.sh which may have line ending issues
+        python_script = '''
+import sys
+import json
+import allin1
+
+audio_path = sys.argv[1]
+result = allin1.analyze(audio_path)
+
+output = {
+    "bpm": float(result.bpm),
+    "beats": [float(b) for b in result.beats],
+    "downbeats": [float(d) for d in result.downbeats],
+    "segments": [
+        {
+            "label": s.label,
+            "start": float(s.start),
+            "end": float(s.end)
+        }
+        for s in result.segments
+    ]
+}
+print(json.dumps(output))
+'''
+
         cmd = ["docker", "run", "--rm"]
 
         # Add GPU support if enabled
         if self.use_gpu:
             cmd.extend(["--gpus", "all"])
 
-        # Mount volumes
+        # Mount volumes and override entrypoint to bypass shell script issues
         cmd.extend([
             "-v", f"{audio_dir}:/input:ro",
+            "--entrypoint", "python",
             self.image_name,
-            "--json",
+            "-c", python_script,
             f"/input/{audio_filename}"
         ])
 

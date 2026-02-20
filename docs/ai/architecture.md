@@ -104,7 +104,7 @@ projects/music-analyzer/
     ├── project_differ.py       # Compare two .als versions
     └── batch_scanner.py        # Scan & rank multiple projects
 
-als-doctor.bat              # Windows batch wrapper (in project root)
+util/als-doctor.bat         # Windows batch wrapper
 ```
 
 ---
@@ -845,7 +845,7 @@ threshold = cfg('clipping', 'threshold')
 ## ALS Doctor - Project Health Analysis
 
 **Location:** `projects/music-analyzer/src/als_doctor.py`
-**Batch file:** `als-doctor.bat` (project root)
+**Batch file:** `util/als-doctor.bat`
 
 ### Overview
 

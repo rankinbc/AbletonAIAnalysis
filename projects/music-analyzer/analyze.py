@@ -180,9 +180,40 @@ def detect_song_structure(song_name: str, inputs_dir: str = "./inputs"):
               help='After analysis, launch Claude with recommendations (requires claude CLI)')
 @click.option('--genre-preset', 'genre_preset', type=click.Choice(['trance', 'house', 'techno', 'dnb', 'progressive']),
               help='Use genre-specific target values for analysis')
+@click.option('--trance-score', 'trance_score', is_flag=True,
+              help='Compute trance DNA score (tempo, pumping, energy, supersaw, 303, etc.)')
+@click.option('--gap-analysis', 'gap_analysis', type=click.Path(exists=True),
+              help='Compare audio against a reference profile (JSON) and show production gaps')
+@click.option('--prescriptive', 'prescriptive_fixes', is_flag=True,
+              help='Generate detailed prescriptive fixes with OSC commands (use with --gap-analysis)')
+@click.option('--build-embeddings', 'build_embeddings', type=click.Path(exists=True),
+              help='Build similarity index from reference audio directory')
+@click.option('--embedding-output', 'embedding_output', type=click.Path(),
+              help='Output path for embeddings index (default: ./embeddings_index/)')
+@click.option('--find-similar', 'find_similar', type=click.Path(exists=True),
+              help='Find tracks similar to this audio file')
+@click.option('--embedding-index', 'embedding_index', type=click.Path(exists=True),
+              help='Path to embeddings index for similarity search')
+@click.option('--top', 'top_k', type=int, default=5,
+              help='Number of similar tracks to return (default: 5)')
+@click.option('--collect-feedback', 'collect_feedback', is_flag=True,
+              help='Collect user feedback on fixes during gap analysis (enables continuous learning)')
+@click.option('--learning-stats', 'learning_stats', is_flag=True,
+              help='Show learning statistics from collected feedback')
+@click.option('--tune-profile', 'tune_profile', type=click.Path(exists=True),
+              help='Apply learned adjustments to a reference profile')
+@click.option('--tuned-output', 'tuned_output', type=click.Path(),
+              help='Output path for tuned profile (default: <profile>_tuned.json)')
+@click.option('--reset-learning', 'reset_learning', is_flag=True,
+              help='Reset all learning data (use with caution)')
+@click.option('--learning-db', 'learning_db_path', type=click.Path(),
+              default='learning_data.db',
+              help='Path to learning database (default: learning_data.db)')
 def main(audio, stems, als, reference, master, output, output_format, verbose,
          separate, compare_ref, analyze_reference, deep_analysis, add_reference, reference_id, list_references, genre, tags,
-         song, mix_version, config_path, no_sections, no_stems, no_midi, ai_recommend, genre_preset):
+         song, mix_version, config_path, no_sections, no_stems, no_midi, ai_recommend, genre_preset, trance_score, gap_analysis,
+         prescriptive_fixes, build_embeddings, embedding_output, find_similar, embedding_index, top_k,
+         collect_feedback, learning_stats, tune_profile, tuned_output, reset_learning, learning_db_path):
     """
     Analyze Ableton projects and audio files for mixing issues.
 
@@ -229,6 +260,43 @@ def main(audio, stems, als, reference, master, output, output_format, verbose,
     Standalone reference track analysis (get production targets):
         python analyze.py --analyze-reference pro_track.wav
         python analyze.py --analyze-reference pro_track.wav --deep
+
+    \b
+    Compute trance DNA score (sidechain, supersaw, 303, energy, etc.):
+        python analyze.py --audio my_mix.wav --trance-score
+
+    \b
+    Compare WIP against reference profile (gap analysis):
+        python analyze.py --audio my_mix.wav --gap-analysis trance_profile.json
+
+    \b
+    Gap analysis with prescriptive fixes (detailed actionable recommendations):
+        python analyze.py --audio my_mix.wav --gap-analysis profile.json --prescriptive
+        python analyze.py --audio my_mix.wav --als project.als --gap-analysis profile.json --prescriptive
+
+    \b
+    Build embeddings index for similarity search:
+        python analyze.py --build-embeddings ./references/ --embedding-output ./my_index/
+
+    \b
+    Find similar tracks using embeddings:
+        python analyze.py --find-similar my_track.wav --embedding-index ./my_index/ --top 5
+
+    \b
+    Continuous learning - collect feedback on fixes:
+        python analyze.py --audio my_mix.wav --gap-analysis profile.json --prescriptive --collect-feedback
+
+    \b
+    View learning statistics:
+        python analyze.py --learning-stats
+
+    \b
+    Apply learned adjustments to a profile:
+        python analyze.py --tune-profile profile.json --tuned-output tuned_profile.json
+
+    \b
+    Reset learning data:
+        python analyze.py --reset-learning
     """
     print_header()
 
@@ -253,6 +321,112 @@ def main(audio, stems, als, reference, master, output, output_format, verbose,
         if disabled:
             print(f"  Disabled stages: {', '.join(disabled)}")
         print()
+
+    # Handle --reset-learning
+    if reset_learning:
+        print_section("Reset Learning Data")
+        try:
+            from learning import LearningDatabase
+            print(f"  {Fore.YELLOW}WARNING: This will delete all learning data!{Style.RESET_ALL}")
+            print(f"  Database: {learning_db_path}")
+            confirm = input("  Type 'yes' to confirm: ").strip().lower()
+            if confirm == 'yes':
+                db = LearningDatabase(learning_db_path)
+                db.reset()
+                print(f"  {Fore.GREEN}[OK] Learning data reset{Style.RESET_ALL}")
+            else:
+                print(f"  {Fore.YELLOW}Cancelled{Style.RESET_ALL}")
+        except ImportError as e:
+            print(f"  {Fore.RED}[ERROR] Learning module not available: {e}{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Reset failed: {e}{Style.RESET_ALL}")
+        return
+
+    # Handle --learning-stats
+    if learning_stats:
+        print_section("Learning Statistics")
+        try:
+            from learning import LearningDatabase, EffectivenessTracker, ProfileTuner
+            from learning.effectiveness_tracker import format_effectiveness_report
+
+            db = LearningDatabase(learning_db_path)
+            tracker = EffectivenessTracker(db=db, verbose=verbose)
+
+            # Get effectiveness report
+            report = tracker.get_feature_effectiveness_report()
+
+            # Print formatted report
+            print(format_effectiveness_report(report))
+
+            # Also show tuning recommendations if there's enough data
+            summary = db.get_summary_stats()
+            if summary.get('session_count', 0) >= 3:
+                tuner = ProfileTuner(db=db, verbose=verbose)
+                learning_report = tuner.export_learning_report()
+                print(learning_report)
+
+        except ImportError as e:
+            print(f"  {Fore.RED}[ERROR] Learning module not available: {e}{Style.RESET_ALL}")
+            print(f"  Make sure the learning module is installed.")
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Failed to get learning stats: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+        return
+
+    # Handle --tune-profile
+    if tune_profile:
+        print_section("Profile Tuning")
+        try:
+            from learning import LearningDatabase, ProfileTuner
+            from learning.profile_tuner import format_tuning_report
+            from profiling import ReferenceProfile
+
+            db = LearningDatabase(learning_db_path)
+            tuner = ProfileTuner(db=db, verbose=verbose)
+
+            print(f"  Loading profile: {Path(tune_profile).name}")
+            profile = ReferenceProfile.load(tune_profile)
+
+            # Generate tuning report
+            report = tuner.suggest_profile_updates(profile)
+
+            # Print recommendations
+            print(format_tuning_report(report))
+
+            # Determine output path
+            if tuned_output:
+                output_path = tuned_output
+            else:
+                stem = Path(tune_profile).stem
+                output_path = str(Path(tune_profile).parent / f"{stem}_tuned.json")
+
+            # Ask for confirmation
+            print(f"\n  Output: {output_path}")
+            confirm = input("  Apply tuning? [y/N]: ").strip().lower()
+            if confirm in ('y', 'yes'):
+                tuner.save_tuned_profile(
+                    profile,
+                    output_path,
+                    apply_weights=True,
+                    apply_confidence=True,
+                    apply_ranges=False  # Conservative by default
+                )
+                print(f"  {Fore.GREEN}[OK] Tuned profile saved to: {output_path}{Style.RESET_ALL}")
+            else:
+                print(f"  {Fore.YELLOW}Cancelled{Style.RESET_ALL}")
+
+        except ImportError as e:
+            print(f"  {Fore.RED}[ERROR] Learning module not available: {e}{Style.RESET_ALL}")
+        except FileNotFoundError as e:
+            print(f"  {Fore.RED}[ERROR] Profile not found: {e}{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Profile tuning failed: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+        return
 
     # Handle list-references first (doesn't need other inputs)
     if list_references:
@@ -392,6 +566,386 @@ def main(audio, stems, als, reference, master, output, output_format, verbose,
 
         except Exception as e:
             print(f"  {Fore.RED}[ERROR] Reference analysis failed: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+        return
+
+    # Handle --trance-score (standalone trance DNA analysis)
+    if trance_score and audio:
+        print_section("Trance DNA Analysis")
+        try:
+            from feature_extraction import extract_all_trance_features, TranceScoreCalculator
+            from feature_extraction.trance_features import format_trance_features_report
+
+            print(f"  Analyzing: {Path(audio).name}")
+            print(f"  Computing trance-specific features...")
+            print()
+
+            features = extract_all_trance_features(audio, verbose=verbose)
+
+            # Print formatted report
+            report = format_trance_features_report(features)
+            for line in report.split('\n'):
+                print(f"  {line}")
+
+            # Get improvement suggestions
+            scorer = TranceScoreCalculator()
+            from feature_extraction.trance_scorer import TranceScoreBreakdown
+            breakdown = TranceScoreBreakdown(**features.trance_score_breakdown)
+            suggestions = scorer.get_improvement_suggestions(breakdown)
+
+            if suggestions:
+                print(f"\n  {Fore.YELLOW}IMPROVEMENT SUGGESTIONS:{Style.RESET_ALL}")
+                for i, suggestion in enumerate(suggestions, 1):
+                    print(f"  {i}. {suggestion}")
+
+            # Save JSON output
+            from datetime import datetime
+            output_dir = Path(output)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            json_filename = f"trance_score_{Path(audio).stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            json_path = output_dir / json_filename
+
+            import json
+            with open(json_path, 'w') as f:
+                json.dump(features.to_dict(), f, indent=2, default=str)
+            print(f"\n  {Fore.GREEN}[OK] Analysis saved to: {json_path}{Style.RESET_ALL}")
+
+        except ImportError as e:
+            print(f"  {Fore.RED}[ERROR] Trance feature extraction module not available: {e}{Style.RESET_ALL}")
+            print(f"  Make sure all dependencies are installed (librosa, scipy, numpy)")
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Trance analysis failed: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+        return
+
+    # Handle --build-embeddings (build similarity index)
+    if build_embeddings:
+        print_section("Building Embeddings Index")
+        try:
+            from embeddings import OpenL3Extractor, SimilarityIndex
+            from embeddings.openl3_extractor import get_extractor
+
+            refs_dir = Path(build_embeddings)
+            output_dir = Path(embedding_output) if embedding_output else Path('./embeddings_index')
+
+            print(f"  Source: {refs_dir}")
+            print(f"  Output: {output_dir}")
+            print()
+
+            # Find audio files
+            audio_files = []
+            for ext in ['*.wav', '*.flac', '*.mp3', '*.WAV', '*.FLAC', '*.MP3']:
+                audio_files.extend(refs_dir.glob(f'**/{ext}'))
+
+            if not audio_files:
+                print(f"  {Fore.YELLOW}No audio files found in {refs_dir}{Style.RESET_ALL}")
+                return
+
+            print(f"  Found {len(audio_files)} audio files")
+            print()
+
+            # Initialize extractor and index
+            print(f"  Initializing OpenL3 extractor...")
+            extractor = get_extractor(content_type="music", embedding_size=512, verbose=verbose)
+
+            index = SimilarityIndex(dimension=512, index_type="flat")
+
+            # Extract embeddings with progress
+            print(f"  Extracting embeddings...")
+            for i, audio_path in enumerate(audio_files):
+                print(f"  [{i+1}/{len(audio_files)}] {audio_path.name}")
+                try:
+                    result = extractor.extract(str(audio_path))
+                    track_id = audio_path.stem
+                    index.add(
+                        result.embedding,
+                        track_id,
+                        metadata={
+                            'path': str(audio_path),
+                            'duration': result.duration_seconds
+                        }
+                    )
+                except Exception as e:
+                    print(f"    {Fore.YELLOW}Warning: Failed to process {audio_path.name}: {e}{Style.RESET_ALL}")
+
+            # Save index
+            print()
+            print(f"  Saving index...")
+            index.save(str(output_dir))
+
+            print(f"\n  {Fore.GREEN}[OK] Embeddings index built successfully{Style.RESET_ALL}")
+            print(f"  Index: {output_dir}")
+            print(f"  Tracks: {index.size}")
+            print(f"\n  Use with: python analyze.py --find-similar track.wav --embedding-index {output_dir}")
+
+        except ImportError as e:
+            print(f"  {Fore.RED}[ERROR] Embeddings module not available: {e}{Style.RESET_ALL}")
+            print(f"  Install dependencies: pip install openl3 faiss-cpu")
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Building embeddings failed: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+        return
+
+    # Handle --find-similar (similarity search)
+    if find_similar:
+        print_section("Finding Similar Tracks")
+        try:
+            from embeddings import SimilarityIndex
+            from embeddings.openl3_extractor import get_extractor
+
+            index_path = Path(embedding_index) if embedding_index else Path('./embeddings_index')
+
+            if not index_path.exists():
+                print(f"  {Fore.RED}[ERROR] Embeddings index not found: {index_path}{Style.RESET_ALL}")
+                print(f"  Build an index first: python analyze.py --build-embeddings references/")
+                return
+
+            print(f"  Query: {Path(find_similar).name}")
+            print(f"  Index: {index_path}")
+            print()
+
+            # Load index
+            print(f"  Loading index...")
+            index = SimilarityIndex(dimension=512)
+            index.load(str(index_path))
+            print(f"  Index contains {index.size} tracks")
+            print()
+
+            # Extract query embedding
+            print(f"  Extracting query embedding...")
+            extractor = get_extractor(content_type="music", embedding_size=512, verbose=verbose)
+            query_result = extractor.extract(find_similar)
+
+            # Search
+            print(f"  Searching for similar tracks...")
+            results = index.search(query_result.embedding, k=top_k)
+
+            print(f"\n  {Fore.CYAN}=== SIMILAR TRACKS ==={Style.RESET_ALL}\n")
+
+            for i, result in enumerate(results, 1):
+                similarity_pct = result.similarity * 100
+                color = Fore.GREEN if similarity_pct > 70 else Fore.YELLOW if similarity_pct > 50 else Fore.WHITE
+                print(f"  {i}. {color}{result.track_id}{Style.RESET_ALL}")
+                print(f"     Similarity: {similarity_pct:.1f}%")
+                if result.metadata and 'path' in result.metadata:
+                    print(f"     Path: {result.metadata['path']}")
+                print()
+
+        except ImportError as e:
+            print(f"  {Fore.RED}[ERROR] Embeddings module not available: {e}{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Similarity search failed: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+        return
+
+    # Handle --gap-analysis (compare against reference profile)
+    if gap_analysis and audio:
+        print_section("Gap Analysis (Profile Comparison)")
+        try:
+            from profiling import ReferenceProfile
+            from analysis import GapAnalyzer
+
+            print(f"  Track: {Path(audio).name}")
+            print(f"  Profile: {Path(gap_analysis).name}")
+            print()
+
+            # Load profile
+            profile = ReferenceProfile.load(gap_analysis)
+            print(f"  Loaded profile: {profile.name} ({profile.track_count} reference tracks)")
+            print()
+
+            # Run analysis
+            analyzer = GapAnalyzer(profile)
+            report = analyzer.analyze(audio)
+
+            # Print summary
+            print(f"  {Fore.CYAN}=== OVERALL ASSESSMENT ==={Style.RESET_ALL}")
+            print(f"  Similarity to References: {report.overall_similarity:.0%}")
+            print(f"  Trance Score: {report.trance_score:.2f} / 1.00")
+            print(f"  Nearest Style: \"{report.nearest_cluster_name}\"")
+            print()
+
+            # Issues summary
+            print(f"  {Fore.CYAN}=== ISSUES FOUND ==={Style.RESET_ALL}")
+            print(f"  Critical: {report.gap_count_by_severity.get('critical', 0)}    "
+                  f"Warning: {report.gap_count_by_severity.get('warning', 0)}    "
+                  f"Minor: {report.gap_count_by_severity.get('minor', 0)}")
+            print()
+
+            # Critical issues
+            if report.critical_gaps:
+                print(f"  {Fore.RED}CRITICAL ISSUES:{Style.RESET_ALL}")
+                for i, gap in enumerate(report.critical_gaps[:5], 1):
+                    print(f"    {i}. {gap.description}")
+                    print(f"       → {gap.recommendation}")
+                print()
+
+            # Warnings
+            if report.warning_gaps:
+                print(f"  {Fore.YELLOW}WARNINGS:{Style.RESET_ALL}")
+                for i, gap in enumerate(report.warning_gaps[:5], 1):
+                    print(f"    {i}. {gap.description}")
+                print()
+
+            # Top recommendations
+            print(f"  {Fore.GREEN}TOP RECOMMENDATIONS:{Style.RESET_ALL}")
+            for fix in report.prioritized_fixes[:5]:
+                severity_color = Fore.RED if fix.severity == 'critical' else Fore.YELLOW if fix.severity == 'warning' else Fore.WHITE
+                print(f"    {fix.priority}. {severity_color}[{fix.severity.upper()}]{Style.RESET_ALL} {fix.action}")
+            print()
+
+            # Prescriptive fixes (if requested)
+            prescriptive_data = None
+            if prescriptive_fixes:
+                try:
+                    from fixes import PrescriptiveFixGenerator, FixValidator
+
+                    print(f"  {Fore.CYAN}=== PRESCRIPTIVE FIXES ==={Style.RESET_ALL}")
+                    print()
+
+                    # Load ALS data if available
+                    als_data = None
+                    if als:
+                        try:
+                            parser = ALSParser(verbose=verbose)
+                            als_data = parser.parse(als)
+                            print(f"  Using ALS file for track-specific recommendations: {Path(als).name}")
+                            print()
+                        except Exception:
+                            pass
+
+                    # Generate prescriptive fixes
+                    generator = PrescriptiveFixGenerator(profile=profile)
+                    fixes = generator.generate_fixes(report, als_data=als_data)
+
+                    # Validate fixes
+                    validator = FixValidator()
+                    valid_fixes = []
+                    for fix in fixes:
+                        result = validator.validate(fix)
+                        if result.is_valid:
+                            valid_fixes.append(fix)
+                            # Add validation info
+                            fix.confidence *= result.estimated_impact
+
+                    # Show fixes
+                    automatable = [f for f in valid_fixes if f.is_automatable]
+                    manual = [f for f in valid_fixes if not f.is_automatable]
+
+                    if automatable:
+                        print(f"  {Fore.GREEN}🤖 AUTOMATABLE FIXES ({len(automatable)}):{Style.RESET_ALL}")
+                        print()
+                        for fix in automatable[:5]:
+                            severity_icon = {'critical': '🔴', 'warning': '🟡', 'minor': '🟢'}.get(fix.severity, '⚪')
+                            print(f"  [{fix.priority}] {severity_icon} {fix.feature.replace('_', ' ').title()} (Confidence: {fix.confidence*100:.0f}%)")
+                            print(f"      Current: {fix.current_value:.2f} | Target: {fix.target_value:.2f}")
+                            if fix.target_track:
+                                print(f"      Track: \"{fix.target_track}\" | Device: {fix.target_device}")
+                            print(f"      → {fix.suggested_change}")
+                            if fix.osc_command:
+                                print(f"      OSC: {fix.osc_command}")
+                            print()
+
+                    if manual:
+                        print(f"  {Fore.YELLOW}👤 MANUAL FIXES ({len(manual)}):{Style.RESET_ALL}")
+                        print()
+                        for fix in manual[:5]:
+                            severity_icon = {'critical': '🔴', 'warning': '🟡', 'minor': '🟢'}.get(fix.severity, '⚪')
+                            print(f"  [{fix.priority}] {severity_icon} {fix.feature.replace('_', ' ').title()} (Confidence: {fix.confidence*100:.0f}%)")
+                            print(f"      Current: {fix.current_value:.2f} | Target: {fix.target_value:.2f}")
+                            print(f"      → {fix.suggested_change}")
+                            if fix.manual_steps:
+                                for step in fix.manual_steps[:2]:
+                                    print(f"        • {step}")
+                            print()
+
+                    # Store for JSON output
+                    prescriptive_data = [f.to_dict() for f in valid_fixes]
+
+                    # Collect feedback if requested
+                    if collect_feedback and valid_fixes:
+                        try:
+                            from learning import LearningDatabase, FeedbackCollector
+                            from learning.feedback_collector import format_session_summary
+
+                            print(f"\n  {Fore.CYAN}=== FEEDBACK COLLECTION ==={Style.RESET_ALL}")
+                            print(f"  Collecting feedback to improve future recommendations...")
+                            print()
+
+                            db = LearningDatabase(learning_db_path)
+                            collector = FeedbackCollector(db=db, verbose=verbose)
+
+                            # Collect batch feedback
+                            feedback_result = collector.collect_batch_feedback(
+                                fixes=valid_fixes,
+                                track_path=audio,
+                                profile_name=profile.name,
+                                gap_report=report
+                            )
+
+                            if feedback_result['session_id']:
+                                # Print session summary
+                                print(format_session_summary(feedback_result['session']))
+
+                                # Prompt for re-analysis
+                                print(f"\n  {Fore.YELLOW}Re-analyze to measure improvement? [y/N]:{Style.RESET_ALL} ", end='')
+                                try:
+                                    reanalyze = input().strip().lower()
+                                except (EOFError, KeyboardInterrupt):
+                                    reanalyze = 'n'
+
+                                if reanalyze in ('y', 'yes'):
+                                    print(f"\n  {Fore.CYAN}Re-analyzing track...{Style.RESET_ALL}")
+                                    print(f"  {Fore.YELLOW}Note: Re-run analysis after applying fixes to your project{Style.RESET_ALL}")
+                                    print(f"  {Fore.YELLOW}Then use --learning-stats to see improvement metrics{Style.RESET_ALL}")
+
+                                print(f"\n  {Fore.GREEN}[OK] Feedback saved to {learning_db_path}{Style.RESET_ALL}")
+
+                        except ImportError as e:
+                            print(f"  {Fore.YELLOW}[WARNING] Learning module not available: {e}{Style.RESET_ALL}")
+                        except Exception as e:
+                            print(f"  {Fore.YELLOW}[WARNING] Feedback collection failed: {e}{Style.RESET_ALL}")
+                            if verbose:
+                                import traceback
+                                traceback.print_exc()
+
+                except ImportError as e:
+                    print(f"  {Fore.YELLOW}[WARNING] Prescriptive fixes module not available: {e}{Style.RESET_ALL}")
+                except Exception as e:
+                    print(f"  {Fore.YELLOW}[WARNING] Could not generate prescriptive fixes: {e}{Style.RESET_ALL}")
+                    if verbose:
+                        import traceback
+                        traceback.print_exc()
+
+            # Save report
+            from datetime import datetime
+            output_dir = Path(output)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            json_filename = f"gap_report_{Path(audio).stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            json_path = output_dir / json_filename
+
+            import json
+            report_data = report.to_dict()
+            if prescriptive_data:
+                report_data['prescriptive_fixes'] = prescriptive_data
+            with open(json_path, 'w') as f:
+                json.dump(report_data, f, indent=2)
+            print(f"  {Fore.GREEN}[OK] Full report saved to: {json_path}{Style.RESET_ALL}")
+
+        except FileNotFoundError as e:
+            print(f"  {Fore.RED}[ERROR] Profile not found: {e}{Style.RESET_ALL}")
+        except ImportError as e:
+            print(f"  {Fore.RED}[ERROR] Gap analysis module not available: {e}{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Gap analysis failed: {e}{Style.RESET_ALL}")
             if verbose:
                 import traceback
                 traceback.print_exc()

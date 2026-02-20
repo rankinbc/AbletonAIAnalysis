@@ -1,0 +1,6 @@
+# Ignore runtime state
+state/
+*.log
+
+# Ignore local credentials
+ssh/id_*

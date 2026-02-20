@@ -32,7 +32,7 @@ def test_watch_event_dataclass():
     assert event.file_path == "/path/to/project/test.als"
     assert event.event_type == "modified"
     assert event.als_filename == "test.als"
-    assert event.project_folder == "/path/to/project"
+    assert event.project_folder == os.path.normpath("/path/to/project")
     assert isinstance(event.timestamp, datetime)
 
     print("  ✓ WatchEvent dataclass")

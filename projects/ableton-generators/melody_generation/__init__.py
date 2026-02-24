@@ -179,6 +179,39 @@ from .integration import (
     generate_arp as generate_arp_track,
 )
 
+# Tokenizer (Step 1.3)
+from .tokenizer import (
+    get_tokenizer,
+    notes_to_midi,
+    midi_to_notes,
+    notes_to_tokens,
+    tokens_to_notes,
+    midi_to_tokens,
+    tokens_to_midi,
+    validate_roundtrip,
+    train_bpe,
+    save_tokenizer,
+    load_tokenizer,
+    RoundtripReport,
+)
+
+# Evaluation (Step 1.6)
+from .evaluation import (
+    evaluate_melody as evaluate_melody_metrics,
+    evaluate_midi,
+    evaluate_batch,
+    compute_reference_stats,
+    compare_baselines,
+    save_baseline,
+    load_baseline,
+    print_metrics,
+    MelodyMetrics,
+    ReferenceStats,
+    ComparisonReport,
+    METRIC_WEIGHTS,
+    TRANCE_TARGETS,
+)
+
 
 # Convenience function to run all demos
 def run_demos():
@@ -323,6 +356,35 @@ __all__ = [
     "GenerationResult",
     "generate_melody",
     "generate_arp_track",
+
+    # Tokenizer
+    "get_tokenizer",
+    "notes_to_midi",
+    "midi_to_notes",
+    "notes_to_tokens",
+    "tokens_to_notes",
+    "midi_to_tokens",
+    "tokens_to_midi",
+    "validate_roundtrip",
+    "train_bpe",
+    "save_tokenizer",
+    "load_tokenizer",
+    "RoundtripReport",
+
+    # Evaluation
+    "evaluate_melody_metrics",
+    "evaluate_midi",
+    "evaluate_batch",
+    "compute_reference_stats",
+    "compare_baselines",
+    "save_baseline",
+    "load_baseline",
+    "print_metrics",
+    "MelodyMetrics",
+    "ReferenceStats",
+    "ComparisonReport",
+    "METRIC_WEIGHTS",
+    "TRANCE_TARGETS",
 
     # Demo
     "run_demos",

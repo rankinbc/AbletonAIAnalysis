@@ -297,12 +297,24 @@ class Chord:
         """Check if pitch class is a chord tone."""
         return pitch in self.pitch_classes
 
-    def tension_of_pitch(self, pitch: PitchClass) -> TensionLevel:
-        """Get tension level of a pitch against this chord."""
+    def tension_of_pitch(
+        self, pitch: PitchClass, scale_pcs: Optional[FrozenSet[int]] = None,
+    ) -> TensionLevel:
+        """
+        Get tension level of a pitch against this chord.
+
+        Args:
+            pitch: The pitch class to evaluate.
+            scale_pcs: Optional frozenset of pitch-class integers (0-11)
+                belonging to the current scale. When provided, scale membership
+                is checked accurately. When omitted, falls back to the union of
+                major and natural minor intervals (safe default).
+        """
         interval = self.root.interval_to(pitch)
 
         # Chord tones
-        if interval in self.chord_tones or interval in [i % 12 for i in self.chord_tones]:
+        chord_tone_intervals = set(self.chord_tones) | {i % 12 for i in self.chord_tones}
+        if interval in chord_tone_intervals:
             if interval in (0, 7):  # Root or 5th
                 return TensionLevel.STABLE
             elif interval in (3, 4):  # 3rd
@@ -310,10 +322,15 @@ class Chord:
             else:  # Extensions
                 return TensionLevel.MODERATE
 
-        # Scale tones (assuming major/minor context)
-        scale_intervals = {0, 2, 4, 5, 7, 9, 11}  # Major scale
-        if interval in scale_intervals:
-            return TensionLevel.MODERATE
+        # Scale tones — use provided context or fall back to major ∪ minor union
+        if scale_pcs is not None:
+            if pitch.value in scale_pcs:
+                return TensionLevel.MODERATE
+        else:
+            # Union of major + natural minor intervals from root
+            default_scale = {0, 2, 3, 4, 5, 7, 8, 9, 10, 11}
+            if interval in default_scale:
+                return TensionLevel.MODERATE
 
         # Chromatic
         return TensionLevel.CHROMATIC
@@ -395,6 +412,7 @@ class NoteEvent:
     scale_degree: Optional[int] = None
     chord_tone: bool = False
     tension_level: TensionLevel = TensionLevel.STABLE
+    nct_type: Optional[str] = None  # e.g. 'passing', 'neighbor', 'suspension', etc.
 
     # Transformation tracking
     source_motif_id: Optional[str] = None

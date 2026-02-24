@@ -150,6 +150,9 @@ class LeadGenerator:
         if context:
             notes = self._coordinate_with_context(notes, context)
 
+        # Annotate each note with NCT classification and scale degree
+        notes = self._annotate_notes(notes, chord_events)
+
         return notes
 
     def _generate_melody(
@@ -365,7 +368,14 @@ class LeadGenerator:
         energy: float,
         phrase_plan: PhrasePlan,
     ) -> List[NoteEvent]:
-        """Render a motif to concrete note events."""
+        """
+        Render a motif to concrete note events.
+
+        Uses NCT-aware pitch selection: passing tones, neighbor tones, and
+        other scale tones are allowed to breathe instead of being snapped
+        to the nearest chord tone.  Only truly chromatic pitches that can't
+        function as a recognizable NCT are redirected.
+        """
         notes = []
         current_pitch = start_pitch
         current_beat = start_beat
@@ -375,24 +385,69 @@ class LeadGenerator:
         for i, interval in enumerate(motif.intervals):
             # Calculate pitch
             if i > 0:
-                # Apply interval, but constrain to chord-compatible notes
                 target_midi = current_pitch.midi_note + interval.interval
                 target_pitch = Pitch.from_midi(target_midi)
 
-                # Check if target is chord tone or scale tone
                 tension = self.harmonic.tension_of_pitch_in_context(target_pitch, chord)
 
-                # If too much tension, find resolution
                 if tension == TensionLevel.CHROMATIC:
-                    # Move to nearest chord tone
-                    chord_tones = self.harmonic.get_chord_tones_in_register(
-                        chord,
-                        target_midi - 3,
-                        target_midi + 3,
-                    )
-                    if chord_tones:
-                        target_pitch = min(chord_tones,
-                                           key=lambda p: abs(p.midi_note - target_midi))
+                    # Before snapping, check if this pitch can work as a
+                    # passing/neighbor tone between the previous note and
+                    # a likely next note (peek one interval ahead).
+                    can_keep = False
+                    if self.harmonic.is_in_scale(target_pitch.pitch_class):
+                        # Scale tone — likely a valid passing or neighbor tone
+                        can_keep = True
+                    elif i + 1 < len(motif.intervals):
+                        # Check if the *next* note would be a chord/scale tone
+                        # (making this a chromatic passing tone)
+                        peek_midi = target_midi + motif.intervals[i + 1].interval
+                        peek_pitch = Pitch.from_midi(peek_midi)
+                        if (chord.contains_pitch(peek_pitch.pitch_class)
+                                or self.harmonic.is_in_scale(peek_pitch.pitch_class)):
+                            # This chromatic note resolves stepwise — allow it
+                            step = abs(motif.intervals[i + 1].interval)
+                            if step <= 2:
+                                can_keep = True
+
+                    if not can_keep:
+                        # Redirect: prefer nearest scale tone, fall back to
+                        # chord tone.  This sounds more melodic than always
+                        # jumping to a chord tone.
+                        scale_tones = self.harmonic.get_scale_notes_in_register(
+                            target_midi - 2, target_midi + 2,
+                        )
+                        if scale_tones:
+                            target_pitch = min(
+                                scale_tones,
+                                key=lambda p: abs(p.midi_note - target_midi),
+                            )
+                        else:
+                            chord_tones = self.harmonic.get_chord_tones_in_register(
+                                chord, target_midi - 3, target_midi + 3,
+                            )
+                            if chord_tones:
+                                target_pitch = min(
+                                    chord_tones,
+                                    key=lambda p: abs(p.midi_note - target_midi),
+                                )
+
+                elif tension == TensionLevel.MODERATE:
+                    # Scale tone / extension — keep it, but on long notes at
+                    # strong beats, gently pull toward chord tones for stability.
+                    is_strong_beat = (current_beat % 4) < 0.01 or (current_beat % 2) < 0.01
+                    is_long = interval.duration_beats >= 2.0
+                    if is_strong_beat and is_long and not chord.contains_pitch(target_pitch.pitch_class):
+                        chord_tones = self.harmonic.get_chord_tones_in_register(
+                            chord, target_midi - 2, target_midi + 2,
+                        )
+                        if chord_tones:
+                            # 50% chance to resolve — keeps some color
+                            if self.rng.random() < 0.5:
+                                target_pitch = min(
+                                    chord_tones,
+                                    key=lambda p: abs(p.midi_note - target_midi),
+                                )
 
                 current_pitch = target_pitch
 
@@ -506,11 +561,16 @@ class LeadGenerator:
         notes: List[NoteEvent],
         context: TrackContext,
     ) -> List[NoteEvent]:
-        """Coordinate melody with other tracks."""
+        """
+        Coordinate melody with other tracks.
+
+        Uses consonance scoring from music21 to prefer intervals that sound
+        good against simultaneously-sounding notes in other tracks, rather
+        than only checking for raw pitch collisions.
+        """
         if not notes:
             return notes
 
-        # Avoid collisions
         for i, note in enumerate(notes):
             chord_event = None
             for ce in context.chord_events:
@@ -519,22 +579,80 @@ class LeadGenerator:
                     break
 
             if chord_event:
-                chord_tones = self.harmonic.get_chord_tones_in_register(
-                    chord_event.chord,
-                    self.register[0],
-                    self.register[1],
-                )
-                chord_midi = [p.midi_note for p in chord_tones]
+                # Check consonance against other tracks sounding at this beat
+                other_pitches = context.pitches_at_beat(note.start_beat)
+                if other_pitches:
+                    # If the note forms a dissonant interval with another track
+                    # AND it's not a recognized NCT, try to move it
+                    is_dissonant = False
+                    for opc in other_pitches:
+                        interval_semitones = note.pitch.pitch_class.interval_to(opc)
+                        # Minor 2nd (1) or major 7th (11) or tritone (6) against
+                        # non-chord bass/pad notes create harsh clashes
+                        if interval_semitones in (1, 6, 11):
+                            is_dissonant = True
+                            break
 
-                notes[i] = self.coordinator.collision_detector.resolve_collision(
-                    note,
-                    note.pitch.midi_note,
-                    chord_midi,
-                    prefer_direction=1,
-                )
+                    if is_dissonant and not chord_event.chord.contains_pitch(note.pitch.pitch_class):
+                        # Try to find a consonant alternative nearby
+                        chord_tones = self.harmonic.get_chord_tones_in_register(
+                            chord_event.chord,
+                            self.register[0],
+                            self.register[1],
+                        )
+                        chord_midi = [p.midi_note for p in chord_tones]
+
+                        notes[i] = self.coordinator.collision_detector.resolve_collision(
+                            note,
+                            note.pitch.midi_note,
+                            chord_midi,
+                            prefer_direction=1,
+                        )
+                else:
+                    # No other tracks sounding — still do basic collision check
+                    chord_tones = self.harmonic.get_chord_tones_in_register(
+                        chord_event.chord,
+                        self.register[0],
+                        self.register[1],
+                    )
+                    chord_midi = [p.midi_note for p in chord_tones]
+
+                    notes[i] = self.coordinator.collision_detector.resolve_collision(
+                        note,
+                        note.pitch.midi_note,
+                        chord_midi,
+                        prefer_direction=1,
+                    )
 
         # Apply voice leading coordination
         notes = self.coordinator.coordinate_voices(notes, context)
+
+        return notes
+
+    def _annotate_notes(
+        self,
+        notes: List[NoteEvent],
+        chord_events: List[ChordEvent],
+    ) -> List[NoteEvent]:
+        """
+        Post-generation pass: annotate every note with its scale degree
+        and non-chord-tone classification.
+
+        This makes the output self-documenting — useful for coaching,
+        debugging, and downstream analysis.
+        """
+        for i, note in enumerate(notes):
+            # Scale degree
+            note.scale_degree = self.harmonic.get_scale_degree(note.pitch.pitch_class)
+
+            # NCT classification requires the current chord
+            chord_event = self._get_chord_at_beat(note.start_beat, chord_events)
+            if chord_event:
+                prev_note = notes[i - 1] if i > 0 else None
+                next_note = notes[i + 1] if i < len(notes) - 1 else None
+                note.nct_type = self.harmonic.classify_non_chord_tone(
+                    note, prev_note, next_note, chord_event.chord,
+                )
 
         return notes
 
@@ -621,13 +739,15 @@ def demo():
 
         print(f"  Generated {len(notes)} notes")
 
-        # Show first few notes
-        for note in notes[:5]:
+        # Show first few notes with NCT annotations
+        for note in notes[:8]:
+            nct = note.nct_type or "?"
+            deg = f"^{note.scale_degree}" if note.scale_degree else " ?"
             print(f"    Beat {note.start_beat:5.2f}: {note.pitch.to_name():4} "
                   f"dur={note.duration_beats:.2f} vel={note.velocity:3} "
-                  f"chord_tone={note.chord_tone}")
-        if len(notes) > 5:
-            print(f"    ... and {len(notes) - 5} more")
+                  f"{deg:>3} {nct:12s}")
+        if len(notes) > 8:
+            print(f"    ... and {len(notes) - 8} more")
 
     print("\n" + "=" * 50)
     print("Demo complete.")

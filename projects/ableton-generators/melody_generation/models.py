@@ -412,6 +412,7 @@ class NoteEvent:
     scale_degree: Optional[int] = None
     chord_tone: bool = False
     tension_level: TensionLevel = TensionLevel.STABLE
+    nct_type: Optional[str] = None  # e.g. 'passing', 'neighbor', 'suspension', etc.
 
     # Transformation tracking
     source_motif_id: Optional[str] = None

@@ -92,9 +92,10 @@ Per-call latency is ~5–10s due to container startup + model loading. This is a
 
 ---
 
-## Step 1.2 — Replace Hand-Coded Music Theory with music21
+## Step 1.2 — Replace Hand-Coded Music Theory with music21 (Mostly Complete)
 
 **Duration:** 3–5 days
+**Status:** Core functionality implemented in prior work. Minor items remain.
 
 ### What and Why
 
@@ -102,44 +103,48 @@ Swap out every hard-coded scale lookup, interval table, chord-tone list, and key
 
 ### Tasks
 
-- [ ] **Scale/mode operations:** Replace hardcoded arrays with `music21.scale` classes (`MinorScale`, `HarmonicMinorScale`, `PhrygianScale`, `LydianScale`, `MixolydianScale`)
-- [ ] **Chord-tone analysis:** Use `music21.harmony.ChordSymbol` for chord membership testing. Enables non-chord-tone classification (passing tones, neighbor tones, suspensions, appoggiaturas) that the current 80/20 rule cannot express
-- [ ] **Interval validation:** Replace magic-number interval checks with `music21.interval.Interval` objects
-- [ ] **Key detection:** Use Krumhansl-Schmuckler algorithm via `music21.analysis.discrete` for automatic key estimation of imported MIDI
-- [ ] **Consonance/dissonance scoring:** Use `interval.isConsonant()` and interval quality properties
-- [ ] Write regression tests: existing rule outputs should remain valid under music21
+- [x] **Scale/mode operations:** `HarmonicEngine` uses `music21.scale` classes (Minor, HarmonicMinor, Dorian, Phrygian, Lydian, Mixolydian, etc.) via `_build_scale_object()`. `get_scale_degree()` and `is_in_scale()` use `getScaleDegreeFromPitch()`.
+- [x] **Interval validation:** `classify_interval()` uses `music21.interval.Interval` for semitones, quality, direction, consonance checks. Replaces magic-number comparisons.
+- [x] **Key detection:** `detect_key()` uses Krumhansl-Schmuckler via `music21.analysis.discrete` for automatic key estimation of imported MIDI.
+- [x] **NCT classification:** `classify_nct()` classifies non-chord-tones (passing, neighbor, suspension, appoggiatura, escape, anticipation, chromatic) using metric position and surrounding note context.
+- [x] **NCT-aware generation:** `LeadGenerator._render_motif()` uses NCT classification to make chromatic passing tone decisions during generation.
+- [ ] **Chord-tone analysis via ChordSymbol:** Currently chord membership uses manual pitch matching against parsed chord tones. Using `music21.harmony.ChordSymbol` would handle extensions (7ths, 9ths, sus chords) more robustly.
+- [ ] **Consonance/dissonance scoring:** `interval.isConsonant()` could feed into the evaluation framework's tension correlation metric. Not yet wired in.
+- [ ] **Regression tests:** No formal regression test suite verifying that existing outputs remain valid after music21 integration.
 
-### Implementation Notes
+### Implementation (done)
+
+**File:** `projects/ableton-generators/melody_generation/harmonic_engine.py`
+
+The `HarmonicEngine` class uses music21 throughout:
 
 ```python
-from music21 import scale, pitch, interval, harmony, analysis
+from music21 import scale as m21scale, pitch as m21pitch, interval as m21interval, key as m21key
 
 # Scale membership (replaces hardcoded arrays)
-am_scale = scale.MinorScale('A')
-is_in_scale = am_scale.getScaleDegreeFromPitch(pitch.Pitch('C4')) is not None
+engine = HarmonicEngine(PitchClass.from_name("A"), "minor")
+engine.is_in_scale(PitchClass.C)     # True
+engine.get_scale_degree(PitchClass.C)  # 3
 
-# Chord-tone analysis (replaces 80/20 rule)
-chord = harmony.ChordSymbol('Am')
-note = pitch.Pitch('E4')
-is_chord_tone = note.name in [p.name for p in chord.pitches]
-
-# Non-chord-tone classification
-# Chord tones on strong beats, passing/neighbor tones on weak beats
-
-# Interval validation (replaces magic numbers)
-i = interval.Interval(pitch.Pitch('C4'), pitch.Pitch('F#4'))
-is_tritone = i.simpleName == 'A4' or i.simpleName == 'd5'
+# Interval classification
+info = engine.classify_interval(pitch_a, pitch_b)
+# Returns: semitones, direction, quality, is_consonant, simple_name
 
 # Key detection from MIDI
-score = converter.parse('melody.mid')
-key_result = score.analyze('key')
+key = HarmonicEngine.detect_key("melody.mid")  # e.g. "A minor"
+
+# NCT classification
+nct = engine.classify_nct(note, prev_note, next_note, chord, is_strong_beat)
+# Returns: "chord_tone", "passing", "neighbor", "suspension", etc.
 ```
 
-### Success Criteria
+### Remaining Items (Low Priority)
 
-- All existing scale/interval/chord logic replaced with music21 calls
-- Regression tests pass
-- New capabilities demonstrated: passing tone detection, Roman numeral analysis
+These are "nice to have" improvements, not blocking Phase 2:
+
+- **ChordSymbol integration** — would improve chord-tone analysis for extended chords
+- **Consonance scoring** — would improve tension metric accuracy
+- **Regression tests** — would formalize validation of music21 migration
 
 ---
 

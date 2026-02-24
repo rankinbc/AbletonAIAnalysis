@@ -4,6 +4,7 @@
 > **Genre:** Trance, 138–145 BPM
 > **Output:** MIDI for Ableton Live
 > **Realistic Timeline:** ~24–28 weeks across 4 phases (aspirational: 16–20)
+> **Current Status:** Phase 1 code complete. Operational tasks (Docker build, reference data collection, listening test) remain before Phase 2.
 
 ---
 
@@ -15,12 +16,12 @@ The existing rule engine is never discarded. Each phase wraps it with increasing
 
 ## Phase Overview
 
-| Phase | Focus | Timeline | Key Outcome | Detail File |
-|-------|-------|----------|-------------|-------------|
-| **1** | Foundation + Quick Wins | Weeks 1–4 | Hybrid pipeline operational | [PHASE-1.md](./PHASE-1.md) |
-| **2** | Data + Fine-Tuning | Weeks 5–8 | Genre-authentic output | [PHASE-2.md](./PHASE-2.md) |
-| **3** | Structure + Emotion | Weeks 9–14 | Tension-driven composition | [PHASE-3.md](./PHASE-3.md) |
-| **4** | Custom Model + Multi-Voice | Weeks 15–20 | Full compositional system | [PHASE-4.md](./PHASE-4.md) |
+| Phase | Focus | Timeline | Key Outcome | Status | Detail File |
+|-------|-------|----------|-------------|--------|-------------|
+| **1** | Foundation + Quick Wins | Weeks 1–4 | Hybrid pipeline operational | **Code complete** — gate pending | [PHASE-1.md](./PHASE-1.md) |
+| **2** | Data + Fine-Tuning | Weeks 5–8 | Genre-authentic output | Not started | [PHASE-2.md](./PHASE-2.md) |
+| **3** | Structure + Emotion | Weeks 9–14 | Tension-driven composition | Not started | [PHASE-3.md](./PHASE-3.md) |
+| **4** | Custom Model + Multi-Voice | Weeks 15–20 | Full compositional system | Not started | [PHASE-4.md](./PHASE-4.md) |
 
 > **Phase 3–4 are optional.** If Phase 2 benchmarks show >90% of reference corpus quality, the system is production-ready.
 
@@ -38,16 +39,16 @@ The existing rule engine is never discarded. Each phase wraps it with increasing
 
 This table shows the critical path. Steps without listed dependencies can be parallelized.
 
-| Step | Name | Depends On | Blocks |
-|------|------|------------|--------|
-| 1.1 | Environment Setup | None | Everything |
-| 1.2 | music21 Integration | 1.1 | 1.4, 1.6, 3.1, 3.4, 4.3 |
-| 1.3 | MidiTok REMI Setup | 1.1 | 1.5, 2.1, 4.1 |
-| 1.4 | Melody/Improv RNN | 1.1, 1.2 | 1.7 |
-| 1.5 | MusicVAE Integration | 1.1, 1.3 | 1.7, 3.3 |
-| 1.6 | Evaluation Framework | 1.2 | 1.7, 2.5, all benchmarks |
-| 1.7 | Full Pipeline v1 | 1.1–1.6 | Phase 2 |
-| 2.1 | Trance Dataset (Tiered) | 1.3, 1.7 | 2.2, 2.3, 2.4, 3.1 |
+| Step | Name | Depends On | Blocks | Status |
+|------|------|------------|--------|--------|
+| 1.1 | Environment Setup (Docker) | None | Everything | ✅ Done |
+| 1.2 | music21 Integration | 1.1 | 1.4, 1.6, 3.1, 3.4, 4.3 | ✅ Core done (minor items remain) |
+| 1.3 | MidiTok REMI Setup | 1.1 | 1.5, 2.1, 4.1 | ✅ Done |
+| 1.4 | Melody/Improv RNN | 1.1, 1.2 | 1.7 | ✅ Done |
+| 1.5 | MusicVAE Integration | 1.1, 1.3 | 1.7, 3.3 | ✅ Done |
+| 1.6 | Evaluation Framework | 1.2 | 1.7, 2.5, all benchmarks | ✅ Done |
+| 1.7 | Full Pipeline v1 | 1.1–1.6 | Phase 2 | ✅ Done |
+| 2.1 | Trance Dataset (Tiered) | 1.3, 1.7 | 2.2, 2.3, 2.4, 3.1 | Not started |
 | 2.2 | Fine-tune Melody RNN | 2.1 | 2.5 |
 | 2.3 | Fine-tune MusicVAE | 2.1 | 2.5 |
 | 2.4 | Fine-tune midi-model | 2.1 | 2.5 |
@@ -94,7 +95,7 @@ MusicVAE stays in a contained TF environment for inference only. When a PyTorch 
 
 | Risk | Mitigation |
 |------|-----------|
-| **Magenta dependency hell** | Strict conda isolation (Step 1.1). Persistent service instead of subprocess calls. MusicVAE inference-only reduces surface area. |
+| **Magenta dependency hell** | Docker isolation (Step 1.1, `shared/magenta/`). Stateless containers via JSON stdin/stdout — no persistent service needed. MusicVAE inference-only reduces surface area. |
 | **Training data scarcity** | Tiered dataset strategy (see [DATASET-STRATEGY.md](./DATASET-STRATEGY.md)). Even 300 Tier 2 files x 12 transpositions = 3,600 training examples. |
 | **RL reward collapse** | RL is gated behind rejection sampling (Step 3.2b). Only pursue if rejection sampling with 20–50 candidates can't hit 95% theory compliance. KL penalty against base policy. Monitor pitch entropy; halt if <2.0 bits. |
 | **Over-engineering** | Phase 3–4 are optional. Every phase gate includes human listening tests. |
@@ -121,12 +122,12 @@ MusicVAE stays in a contained TF environment for inference only. When a PyTorch 
 
 | Library | Version | License | Environment | Purpose |
 |---------|---------|---------|-------------|---------|
-| magenta | latest | Apache 2.0 | magenta-env (Py 3.9) | MusicVAE (long-term), Melody RNN (Phase 1 only) |
-| tensorflow | 2.11.0 | Apache 2.0 | magenta-env | Magenta backend |
-| music21 | 9.9.x | BSD 3-clause | melody-gen (Py 3.11+) | Music theory |
-| miditok | 3.0.x | MIT | melody-gen | REMI tokenization |
-| pretty-midi | 0.2.x | MIT | melody-gen | MIDI I/O |
-| muspy | 0.5.x | MIT | melody-gen | Evaluation metrics |
+| magenta | latest | Apache 2.0 | Docker container (Py 3.9) | MusicVAE (long-term), Melody RNN (Phase 1 only) |
+| tensorflow | 2.11.0 | Apache 2.0 | Docker container | Magenta backend (inside container only) |
+| music21 | 9.9.x | BSD 3-clause | Host (Py 3.11+) | Music theory |
+| miditok | 3.0.x | MIT | Host | REMI tokenization |
+| mido | 1.3.x | MIT | Host | MIDI I/O |
+| numpy | 2.x | BSD | Host | Evaluation metrics, similarity index |
 | torch | 2.x | BSD | melody-gen | SkyTNT, custom models |
 | onnxruntime | latest | MIT | melody-gen | Optimized inference |
 | basic-pitch | latest | Apache 2.0 | melody-gen | Audio-to-MIDI |

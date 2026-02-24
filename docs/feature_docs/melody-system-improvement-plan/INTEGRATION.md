@@ -1,6 +1,6 @@
-# Integration: Connecting New Melody Engine to Existing Ableton Pipeline
+# Integration: Connecting Melody Engine to Existing Ableton Pipeline
 
-> The existing system already generates full Ableton `.als` projects with embedded MIDI, track coloring, arrangement markers, sidechain routing, and more. The new melody engine must produce output that plugs into this assembly pipeline without breaking it.
+> The existing system generates full Ableton `.als` projects with embedded MIDI, track coloring, arrangement markers, sidechain routing, and more. The melody engine produces output that plugs into this assembly pipeline without breaking it.
 
 ---
 
@@ -12,7 +12,7 @@ SongSpec (song_spec.py)
   ├── SectionSpec per section (type, bars, energy, active tracks)
   │
   ├── midi_generator.py → MIDI files per track
-  ├── melody_generation/ → Lead/arp MIDI (current rule-based system)
+  ├── melody_generation/ → Lead/arp MIDI (hybrid pipeline)
   │
   └── ableton_project.py
       ├── Creates .als from template
@@ -25,23 +25,36 @@ SongSpec (song_spec.py)
 
 ## Integration Point
 
-The new `MelodyEngine` replaces the output of `midi_generator.py` and `melody_generation/` for melodic tracks (lead, arp, potentially bass). Everything downstream (`ableton_project.py`, `clip_embedder.py`, etc.) remains unchanged.
+The `HybridPipeline` (in `melody_generation/integration.py`) replaces the output of `midi_generator.py` for melodic tracks (lead, arp). Everything downstream (`ableton_project.py`, `clip_embedder.py`, etc.) remains unchanged.
 
 ```
-                     ┌─────────────────────┐
-SongSpec ──────────► │ NEW: MelodyEngine   │ ──► MIDI files (same format)
-                     │   - Lead melody      │         │
-                     │   - Arp pattern      │         │
-                     │   - Bass line        │         ▼
-                     │   - Pad voicing      │   ableton_project.py
-                     └─────────────────────┘   (unchanged)
+                     ┌──────────────────────┐
+SongSpec ──────────► │ HybridPipeline       │ ──► MIDI files (same format)
+                     │   - Rule engine lead  │         │
+                     │   - ML candidates     │         │
+                     │   - Arp pattern       │         ▼
+                     │   - Evaluation scoring│   ableton_project.py
+                     └──────────────────────┘   (unchanged)
+```
+
+There is also a standalone CLI for melody generation and baseline recording:
+
+```bash
+# Rule-only generation
+python generate.py --key Am --bpm 140 --chords "Am F C G" --bars 16
+
+# Hybrid with ML candidates (requires Docker + Magenta image)
+python generate.py --ml-candidates 5 --variations 2 --verbose --scorecard
+
+# Batch for baseline recording
+python generate.py --batch 50 --output baselines --baseline-label phase_1_hybrid
 ```
 
 ## Compatibility Requirements
 
 ### MIDI Output Format
 
-The new engine must produce MIDI files that `clip_embedder.py` can consume:
+The melody engine must produce MIDI files that `clip_embedder.py` can consume:
 
 - **Format:** Standard MIDI file (Type 0 or Type 1)
 - **One file per track** (lead.mid, arp.mid, bass.mid, pad.mid)
@@ -54,19 +67,21 @@ The new engine must produce MIDI files that `clip_embedder.py` can consume:
 
 ### SongSpec Compatibility
 
-The new engine reads from the existing `SongSpec` and `SectionSpec` dataclasses. New fields needed:
+The `HybridPipeline` accepts parameters directly (key, scale, tempo, chords, section type, bars, energy). It does not read from `SongSpec` directly — the calling code maps SongSpec fields to pipeline parameters.
+
+The following `SongSpec` additions are planned for Phase 3+ when section-level structure and tension curves are implemented:
 
 ```python
-# Additions to SongSpec (song_spec.py)
+# Future additions to SongSpec (song_spec.py) — Phase 3+
 @dataclass
 class SongSpec:
     # ... existing fields ...
-    tension_curve: Optional[List[float]] = None  # Per-bar tension values
+    tension_curve: Optional[List[float]] = None  # Per-bar tension values (Phase 3)
     melody_model: str = "auto"                    # "auto", "midi_model", "rules", etc.
     variation_level: float = 0.3                   # MusicVAE noise scale
     humanization_intensity: float = 0.5
 
-# Additions to SectionSpec
+# Future additions to SectionSpec — Phase 3+
 @dataclass
 class SectionSpec:
     # ... existing fields ...
@@ -74,11 +89,11 @@ class SectionSpec:
     motif_variation: float = 0.0  # 0=exact, 1=free variation
 ```
 
-These additions are backwards-compatible — existing SongSpecs without these fields use defaults.
+These additions will be backwards-compatible — existing SongSpecs without these fields use defaults.
 
 ### stem_arranger.py Compatibility
 
-The stem arranger controls which tracks are active per section. The new engine's section-level planning (Phase 3, Step 3.3) must respect the arranger's track activation schedule. Two options:
+The stem arranger controls which tracks are active per section. The melody engine's section-level planning (Phase 3, Step 3.3) must respect the arranger's track activation schedule. Two options:
 
 1. **Engine respects arranger** (recommended): The melody engine generates MIDI for all sections, and the arranger mutes/unmutes as it does now. Simpler, no changes to arranger.
 2. **Engine coordinates with arranger**: The engine reads the arranger's activation schedule and only generates MIDI for active sections. Tighter but requires arranger API changes.
@@ -89,35 +104,36 @@ Start with option 1. The arranger already handles muting — don't duplicate tha
 
 ## Wiring It In
 
-### Option A: Drop-in Replacement (Phase 1–2)
+### Current Implementation (Phase 1)
 
-Replace the `midi_generator.py` call for melodic tracks with the new pipeline:
+The `HybridPipeline` in `melody_generation/integration.py` is the primary interface:
 
 ```python
-# In the generation orchestrator (ai_song_generator.py or similar)
-from melody_engine import MelodyEngine
+from melody_generation.integration import HybridPipeline
 
 def generate_song(song_spec):
-    engine = MelodyEngine(config="production.yaml")
-
-    # Generate melodic tracks with new engine
-    melodic_midi = engine.generate(
+    pipeline = HybridPipeline(
         key=song_spec.key,
-        bpm=song_spec.tempo,
-        chord_progression=song_spec.chord_progression,
-        structure=[{
-            'section': s.section_type.value,
-            'bars': s.bars,
-            'motif': s.motif_id,
-            'variation': s.motif_variation,
-        } for s in song_spec.sections],
-        tension_curve=song_spec.tension_curve or "auto",
+        scale="minor",
+        tempo=song_spec.tempo,
+        output_dir=str(output_dir / "midi"),
+        reference_stats_path="evaluation/reference_stats.json",
     )
 
-    # Write MIDI files in expected locations
-    melodic_midi.save_track("lead", output_dir / "midi" / "lead.mid")
-    melodic_midi.save_track("arp", output_dir / "midi" / "arp.mid")
-    melodic_midi.save_track("bass", output_dir / "midi" / "bass.mid")
+    # Single generation — returns HybridResult with lead + arp MIDI
+    result = pipeline.generate(
+        chords=["Am", "F", "C", "G"],
+        section_type="drop",
+        bars=16,
+        energy=0.9,
+        num_ml_candidates=5,      # 0 for rule-only
+        num_variations=2,          # MusicVAE variations per candidate
+    )
+
+    # result.midi_path  → Path to exported MIDI file
+    # result.lead_source → "rule_engine" or "improv_rnn" or "musicvae_variation"
+    # result.lead_metrics → MelodyMetrics with composite score
+    # result.all_candidates → All scored candidates for audit
 
     # Drums and FX still use existing generators
     generate_drums(song_spec, output_dir)
@@ -127,31 +143,32 @@ def generate_song(song_spec):
     assemble_als(song_spec, output_dir)
 ```
 
-### Option B: Parallel Mode (Testing)
+The pipeline handles candidate competition internally — rule-based and ML candidates are all scored by the evaluation framework, and the best composite score wins.
 
-Run both old and new generators side by side, compare output:
+### Parallel/Comparison Mode (Baseline Testing)
 
-```python
-# Generate with both, compare
-old_lead = old_midi_generator.generate_lead(song_spec)
-new_lead = melody_engine.generate(song_spec).get_track("lead")
+The CLI supports batch generation for comparing rule-only vs hybrid output:
 
-# Score both
-old_score = evaluate_melody(old_lead, reference_stats)
-new_score = evaluate_melody(new_lead, reference_stats)
+```bash
+# Generate 50 rule-only baselines
+python generate.py --batch 50 --output baselines --baseline-label rule_only
 
-# Use the better one (or always use new if it's above threshold)
-if new_score['composite'] > old_score['composite']:
-    use_midi = new_lead
-else:
-    use_midi = old_lead
+# Generate 50 hybrid baselines
+python generate.py --batch 50 --ml-candidates 5 --output baselines --baseline-label hybrid
+
+# Compare programmatically
+from melody_generation.evaluation import load_baseline, compare_baselines
+rule = load_baseline("baselines/rule_only_baseline.json")
+hybrid = load_baseline("baselines/hybrid_baseline.json")
+report = compare_baselines(rule, hybrid)
+print(f"Improvement: {report.composite_improvement:+.1%}")
 ```
 
 ---
 
 ## What Doesn't Change
 
-These components are unaffected by the melody engine upgrade:
+These components are unaffected by the melody engine:
 
 - `ableton_project.py` — reads MIDI files, doesn't care how they were generated
 - `clip_embedder.py` — embeds whatever MIDI it receives

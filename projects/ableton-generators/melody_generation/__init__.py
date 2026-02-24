@@ -212,6 +212,9 @@ from .evaluation import (
     TRANCE_TARGETS,
 )
 
+# ML Bridge (Steps 1.4 + 1.5) — lazy imports to avoid Docker dependency
+# at module load time. Use: from melody_generation.ml_bridge import ...
+
 
 # Convenience function to run all demos
 def run_demos():

@@ -20,11 +20,88 @@ from typing import Optional, List, Dict, Any, Callable
 from pathlib import Path
 from datetime import datetime
 
-from .structure_detector import (
-    StructureDetector, StructureResult, Section, SectionType
-)
-from .audio_analyzer import AudioAnalyzer
-from .stem_separator import StemSeparator, StemType, DEMUCS_AVAILABLE
+# Handle both relative and absolute import contexts
+try:
+    from .structure_detector import (
+        StructureDetector, StructureResult, Section, SectionType
+    )
+    from .audio_analyzer import AudioAnalyzer
+    from .stem_separator import StemSeparator, StemType, DEMUCS_AVAILABLE
+except ImportError:
+    from structure_detector import (
+        StructureDetector, StructureResult, Section, SectionType
+    )
+    from audio_analyzer import AudioAnalyzer
+    from stem_separator import StemSeparator, StemType, DEMUCS_AVAILABLE
+
+
+@dataclass
+class MelodyNote:
+    """A single detected melody note."""
+    start_time: float
+    end_time: float
+    pitch_hz: float
+    pitch_midi: int
+    pitch_name: str
+    confidence: float
+
+
+@dataclass
+class MelodyMetrics:
+    """Melody metrics for a section or full track."""
+    # Detection info
+    detected: bool
+    confidence: float
+
+    # Pitch statistics
+    pitch_range_semitones: int
+    lowest_note: Optional[str]
+    highest_note: Optional[str]
+    avg_pitch_hz: float
+    pitch_std_hz: float
+
+    # Note statistics
+    note_count: int
+    note_density_per_bar: float
+    avg_note_duration_ms: float
+
+    # Interval distribution (semitones -> count)
+    interval_distribution: Dict[int, int]
+    most_common_intervals: List[int]
+
+    # Contour analysis
+    contour_direction: str  # 'ascending', 'descending', 'arch', 'wave', 'flat'
+    contour_complexity: float  # 0-1, how much the melody changes direction
+
+    # Scale/mode analysis
+    detected_scale: Optional[str]
+    scale_confidence: float
+    in_scale_percentage: float
+
+    # Phrase analysis
+    phrase_count: int
+    avg_phrase_length_bars: float
+
+    # Raw pitch contour (downsampled for JSON)
+    pitch_contour_hz: List[float]
+    pitch_contour_times: List[float]
+
+
+@dataclass
+class MelodyAnalysis:
+    """Complete melody analysis for the track."""
+    # Overall melody metrics
+    overall: MelodyMetrics
+
+    # Per-section melody metrics
+    by_section: Dict[int, MelodyMetrics]  # section_index -> metrics
+
+    # Extracted notes (limited for JSON size)
+    notes: List[MelodyNote]
+
+    # Analysis metadata
+    extraction_method: str  # 'pyin', 'crepe', etc.
+    source: str  # 'full_mix', 'other_stem', 'vocals_stem'
 
 
 @dataclass
@@ -125,6 +202,9 @@ class ReferenceAnalysisResult:
     # Arrangement (optional - requires stem separation)
     arrangement: Optional[ArrangementAnalysis]
 
+    # Melody analysis (optional - requires include_melody=True)
+    melody_analysis: Optional[MelodyAnalysis]
+
     # Production targets
     production_targets: ProductionTargets
 
@@ -133,6 +213,23 @@ class ReferenceAnalysisResult:
 
     # Error info
     error_message: Optional[str] = None
+
+    def _serialize_melody(self) -> Dict:
+        """Serialize melody analysis for JSON."""
+        if not self.melody_analysis:
+            return None
+
+        ma = self.melody_analysis
+        return {
+            'overall': asdict(ma.overall),
+            'by_section': {
+                str(idx): asdict(metrics)
+                for idx, metrics in ma.by_section.items()
+            },
+            'notes': [asdict(n) for n in ma.notes[:500]],  # Limit notes for JSON size
+            'extraction_method': ma.extraction_method,
+            'source': ma.source,
+        }
 
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization."""
@@ -172,6 +269,7 @@ class ReferenceAnalysisResult:
             },
             'section_analysis': [asdict(sm) for sm in self.section_metrics],
             'arrangement': None,  # TODO: serialize if present
+            'melody_analysis': self._serialize_melody() if self.melody_analysis else None,
             'production_targets': {
                 'by_section_type': self.production_targets.by_section_type,
                 'overall': self.production_targets.overall,
@@ -211,6 +309,7 @@ class ReferenceAnalyzer:
     def __init__(
         self,
         include_stems: bool = False,
+        include_melody: bool = False,
         verbose: bool = False,
         config=None
     ):
@@ -219,10 +318,12 @@ class ReferenceAnalyzer:
 
         Args:
             include_stems: Whether to separate and analyze stems (slower but more detailed)
+            include_melody: Whether to extract melody/pitch data (adds processing time)
             verbose: Enable verbose output
             config: Optional config object
         """
         self.include_stems = include_stems
+        self.include_melody = include_melody
         self.verbose = verbose
         self.config = config
 
@@ -328,20 +429,41 @@ class ReferenceAnalyzer:
 
             # Stage 4: Arrangement analysis (if stems enabled)
             arrangement = None
+            separated_stems = None
             if self.include_stems and self.stem_separator:
                 if progress_callback:
                     progress_callback(AnalysisProgress(
                         stage='stems',
-                        progress_pct=70,
-                        message='Analyzing stems (this may take a while)...'
+                        progress_pct=60,
+                        message='Separating and analyzing stems (this may take a while)...'
                     ))
+                # Store stems result for potential melody analysis
+                try:
+                    separation = self.stem_separator.separate(audio_path)
+                    if separation.success:
+                        separated_stems = separation.stems
+                except Exception:
+                    pass
                 arrangement = self._analyze_arrangement(audio_path, structure)
 
-            # Stage 5: Generate production targets
+            # Stage 5: Melody analysis (if enabled)
+            melody_analysis = None
+            if self.include_melody:
+                if progress_callback:
+                    progress_callback(AnalysisProgress(
+                        stage='melody',
+                        progress_pct=75,
+                        message='Extracting melody data...'
+                    ))
+                melody_analysis = self._analyze_melody(
+                    audio_path, y_mono, sr, structure, separated_stems
+                )
+
+            # Stage 6: Generate production targets
             if progress_callback:
                 progress_callback(AnalysisProgress(
                     stage='targets',
-                    progress_pct=85,
+                    progress_pct=88,
                     message='Generating production targets...'
                 ))
 
@@ -349,7 +471,7 @@ class ReferenceAnalyzer:
                 section_metrics, structure
             )
 
-            # Stage 6: Generate AI summary
+            # Stage 7: Generate AI summary
             if progress_callback:
                 progress_callback(AnalysisProgress(
                     stage='summary',
@@ -389,6 +511,7 @@ class ReferenceAnalyzer:
                 sections_by_type=sections_by_type,
                 section_metrics=section_metrics,
                 arrangement=arrangement,
+                melody_analysis=melody_analysis,
                 production_targets=production_targets,
                 ai_summary=ai_summary
             )
@@ -910,6 +1033,440 @@ class ReferenceAnalyzer:
 
         return techniques
 
+    # ========================
+    # Melody Analysis Methods
+    # ========================
+
+    def _analyze_melody(
+        self,
+        audio_path: str,
+        y_mono: np.ndarray,
+        sr: int,
+        structure: StructureResult,
+        separated_stems: Optional[Dict] = None
+    ) -> Optional[MelodyAnalysis]:
+        """
+        Analyze melody from audio using pitch detection.
+
+        Args:
+            audio_path: Path to audio file
+            y_mono: Mono audio array
+            sr: Sample rate
+            structure: Detected structure
+            separated_stems: Optional pre-separated stems
+
+        Returns:
+            MelodyAnalysis or None if detection fails
+        """
+        try:
+            # Decide which audio source to use for melody extraction
+            # Prefer 'other' stem (contains synths/leads) if available
+            melody_audio = y_mono
+            source = 'full_mix'
+
+            if separated_stems and 'other' in separated_stems:
+                try:
+                    other_path = separated_stems['other'].file_path
+                    melody_audio, _ = librosa.load(other_path, sr=sr, mono=True)
+                    source = 'other_stem'
+                    if self.verbose:
+                        print("  Using 'other' stem for melody extraction")
+                except Exception:
+                    pass
+
+            # Extract pitch contour using pyin
+            if self.verbose:
+                print("  Extracting pitch contour...")
+
+            f0, voiced_flag, voiced_prob = librosa.pyin(
+                melody_audio,
+                fmin=librosa.note_to_hz('C2'),
+                fmax=librosa.note_to_hz('C7'),
+                sr=sr,
+                frame_length=2048,
+                hop_length=512
+            )
+
+            times = librosa.times_like(f0, sr=sr, hop_length=512)
+
+            # Segment into notes
+            if self.verbose:
+                print("  Segmenting notes...")
+
+            notes = self._segment_notes(f0, voiced_flag, voiced_prob, times)
+
+            if not notes:
+                if self.verbose:
+                    print("  No melody notes detected")
+                return None
+
+            # Analyze overall melody metrics
+            if self.verbose:
+                print("  Computing melody metrics...")
+
+            overall_metrics = self._compute_melody_metrics(
+                notes, f0, times, structure.tempo_bpm, structure.duration_seconds
+            )
+
+            # Analyze melody per section
+            by_section = {}
+            for i, section in enumerate(structure.sections):
+                section_notes = [
+                    n for n in notes
+                    if n.start_time >= section.start_time and n.end_time <= section.end_time
+                ]
+                if section_notes:
+                    # Extract section's pitch contour
+                    start_idx = np.searchsorted(times, section.start_time)
+                    end_idx = np.searchsorted(times, section.end_time)
+                    section_f0 = f0[start_idx:end_idx]
+                    section_times = times[start_idx:end_idx]
+
+                    section_metrics = self._compute_melody_metrics(
+                        section_notes, section_f0, section_times,
+                        structure.tempo_bpm, section.duration_seconds
+                    )
+                    by_section[i] = section_metrics
+
+            return MelodyAnalysis(
+                overall=overall_metrics,
+                by_section=by_section,
+                notes=notes,
+                extraction_method='pyin',
+                source=source
+            )
+
+        except Exception as e:
+            if self.verbose:
+                print(f"  Melody analysis failed: {e}")
+            return None
+
+    def _segment_notes(
+        self,
+        f0: np.ndarray,
+        voiced_flag: np.ndarray,
+        voiced_prob: np.ndarray,
+        times: np.ndarray,
+        min_note_duration: float = 0.05
+    ) -> List[MelodyNote]:
+        """Segment pitch contour into discrete notes."""
+        notes = []
+
+        # Find voiced regions
+        in_note = False
+        note_start_idx = 0
+        note_pitches = []
+        note_probs = []
+
+        for i in range(len(f0)):
+            is_voiced = voiced_flag[i] if voiced_flag is not None else (not np.isnan(f0[i]))
+
+            if is_voiced and not np.isnan(f0[i]):
+                if not in_note:
+                    # Start new note
+                    in_note = True
+                    note_start_idx = i
+                    note_pitches = [f0[i]]
+                    note_probs = [voiced_prob[i] if voiced_prob is not None else 0.8]
+                else:
+                    # Check if pitch jumped significantly (new note)
+                    if note_pitches and abs(librosa.hz_to_midi(f0[i]) - librosa.hz_to_midi(note_pitches[-1])) > 1.5:
+                        # End current note, start new one
+                        note = self._create_note(
+                            times[note_start_idx], times[i-1],
+                            note_pitches, note_probs
+                        )
+                        if note and (note.end_time - note.start_time) >= min_note_duration:
+                            notes.append(note)
+                        # Start new note
+                        note_start_idx = i
+                        note_pitches = [f0[i]]
+                        note_probs = [voiced_prob[i] if voiced_prob is not None else 0.8]
+                    else:
+                        note_pitches.append(f0[i])
+                        note_probs.append(voiced_prob[i] if voiced_prob is not None else 0.8)
+            else:
+                if in_note:
+                    # End current note
+                    note = self._create_note(
+                        times[note_start_idx], times[i-1],
+                        note_pitches, note_probs
+                    )
+                    if note and (note.end_time - note.start_time) >= min_note_duration:
+                        notes.append(note)
+                    in_note = False
+                    note_pitches = []
+                    note_probs = []
+
+        # Close final note if still in one
+        if in_note and note_pitches:
+            note = self._create_note(
+                times[note_start_idx], times[-1],
+                note_pitches, note_probs
+            )
+            if note and (note.end_time - note.start_time) >= min_note_duration:
+                notes.append(note)
+
+        return notes
+
+    def _create_note(
+        self,
+        start_time: float,
+        end_time: float,
+        pitches: List[float],
+        probs: List[float]
+    ) -> Optional[MelodyNote]:
+        """Create a MelodyNote from a list of pitch values."""
+        if not pitches:
+            return None
+
+        avg_hz = float(np.median(pitches))
+        midi = int(round(librosa.hz_to_midi(avg_hz)))
+        note_name = librosa.midi_to_note(midi)
+        confidence = float(np.mean(probs))
+
+        return MelodyNote(
+            start_time=float(start_time),
+            end_time=float(end_time),
+            pitch_hz=avg_hz,
+            pitch_midi=midi,
+            pitch_name=note_name,
+            confidence=confidence
+        )
+
+    def _compute_melody_metrics(
+        self,
+        notes: List[MelodyNote],
+        f0: np.ndarray,
+        times: np.ndarray,
+        tempo_bpm: float,
+        duration_seconds: float
+    ) -> MelodyMetrics:
+        """Compute melody metrics from notes and pitch contour."""
+
+        if not notes:
+            return self._empty_melody_metrics()
+
+        # Pitch statistics
+        midi_values = [n.pitch_midi for n in notes]
+        hz_values = [n.pitch_hz for n in notes]
+
+        pitch_range = max(midi_values) - min(midi_values)
+        lowest_note = librosa.midi_to_note(min(midi_values))
+        highest_note = librosa.midi_to_note(max(midi_values))
+        avg_pitch_hz = float(np.mean(hz_values))
+        pitch_std_hz = float(np.std(hz_values))
+
+        # Note statistics
+        note_count = len(notes)
+        bars = (duration_seconds / 60) * tempo_bpm / 4  # Assuming 4/4
+        note_density = note_count / bars if bars > 0 else 0
+
+        durations_ms = [(n.end_time - n.start_time) * 1000 for n in notes]
+        avg_duration_ms = float(np.mean(durations_ms)) if durations_ms else 0
+
+        # Interval distribution
+        intervals = []
+        for i in range(1, len(notes)):
+            interval = notes[i].pitch_midi - notes[i-1].pitch_midi
+            intervals.append(interval)
+
+        interval_dist = {}
+        for interval in intervals:
+            interval_dist[interval] = interval_dist.get(interval, 0) + 1
+
+        # Most common intervals (sorted by frequency)
+        sorted_intervals = sorted(interval_dist.items(), key=lambda x: -x[1])
+        most_common = [i[0] for i in sorted_intervals[:5]]
+
+        # Contour analysis
+        contour_dir, contour_complexity = self._analyze_contour(notes)
+
+        # Scale detection
+        detected_scale, scale_conf, in_scale_pct = self._detect_scale(midi_values)
+
+        # Phrase analysis (simplified: phrases separated by gaps > 1 second)
+        phrases = self._detect_phrases(notes)
+        phrase_count = len(phrases)
+        avg_phrase_bars = (sum(len(p) for p in phrases) / len(phrases) / note_density) if phrases and note_density > 0 else 0
+
+        # Downsample pitch contour for JSON
+        valid_f0 = f0[~np.isnan(f0)]
+        valid_times = times[~np.isnan(f0)]
+
+        # Keep ~100 points
+        step = max(1, len(valid_f0) // 100)
+        contour_hz = [float(x) for x in valid_f0[::step]]
+        contour_times = [float(x) for x in valid_times[::step]]
+
+        return MelodyMetrics(
+            detected=True,
+            confidence=float(np.mean([n.confidence for n in notes])),
+            pitch_range_semitones=pitch_range,
+            lowest_note=lowest_note,
+            highest_note=highest_note,
+            avg_pitch_hz=avg_pitch_hz,
+            pitch_std_hz=pitch_std_hz,
+            note_count=note_count,
+            note_density_per_bar=round(note_density, 2),
+            avg_note_duration_ms=round(avg_duration_ms, 1),
+            interval_distribution=interval_dist,
+            most_common_intervals=most_common,
+            contour_direction=contour_dir,
+            contour_complexity=round(contour_complexity, 3),
+            detected_scale=detected_scale,
+            scale_confidence=round(scale_conf, 3),
+            in_scale_percentage=round(in_scale_pct, 1),
+            phrase_count=phrase_count,
+            avg_phrase_length_bars=round(avg_phrase_bars, 2),
+            pitch_contour_hz=contour_hz,
+            pitch_contour_times=contour_times
+        )
+
+    def _empty_melody_metrics(self) -> MelodyMetrics:
+        """Return empty melody metrics when no melody detected."""
+        return MelodyMetrics(
+            detected=False,
+            confidence=0.0,
+            pitch_range_semitones=0,
+            lowest_note=None,
+            highest_note=None,
+            avg_pitch_hz=0.0,
+            pitch_std_hz=0.0,
+            note_count=0,
+            note_density_per_bar=0.0,
+            avg_note_duration_ms=0.0,
+            interval_distribution={},
+            most_common_intervals=[],
+            contour_direction='flat',
+            contour_complexity=0.0,
+            detected_scale=None,
+            scale_confidence=0.0,
+            in_scale_percentage=0.0,
+            phrase_count=0,
+            avg_phrase_length_bars=0.0,
+            pitch_contour_hz=[],
+            pitch_contour_times=[]
+        )
+
+    def _analyze_contour(self, notes: List[MelodyNote]) -> tuple:
+        """Analyze melodic contour direction and complexity."""
+        if len(notes) < 3:
+            return 'flat', 0.0
+
+        pitches = [n.pitch_midi for n in notes]
+
+        # Calculate direction changes
+        directions = []
+        for i in range(1, len(pitches)):
+            diff = pitches[i] - pitches[i-1]
+            if diff > 0:
+                directions.append(1)
+            elif diff < 0:
+                directions.append(-1)
+            else:
+                directions.append(0)
+
+        # Count direction changes
+        changes = sum(1 for i in range(1, len(directions)) if directions[i] != directions[i-1])
+        complexity = changes / len(directions) if directions else 0
+
+        # Determine overall contour
+        first_third = np.mean(pitches[:len(pitches)//3])
+        mid_third = np.mean(pitches[len(pitches)//3:2*len(pitches)//3])
+        last_third = np.mean(pitches[2*len(pitches)//3:])
+
+        if first_third < mid_third > last_third:
+            contour = 'arch'
+        elif first_third > mid_third < last_third:
+            contour = 'wave'
+        elif first_third < last_third and last_third - first_third > 2:
+            contour = 'ascending'
+        elif first_third > last_third and first_third - last_third > 2:
+            contour = 'descending'
+        else:
+            contour = 'flat'
+
+        return contour, complexity
+
+    def _detect_scale(self, midi_values: List[int]) -> tuple:
+        """Detect the most likely scale from MIDI note values."""
+        if not midi_values:
+            return None, 0.0, 0.0
+
+        # Pitch classes (0-11)
+        pitch_classes = [m % 12 for m in midi_values]
+        pc_counts = [0] * 12
+        for pc in pitch_classes:
+            pc_counts[pc] += 1
+
+        # Define scale templates
+        scales = {
+            'major': [0, 2, 4, 5, 7, 9, 11],
+            'natural_minor': [0, 2, 3, 5, 7, 8, 10],
+            'harmonic_minor': [0, 2, 3, 5, 7, 8, 11],
+            'melodic_minor': [0, 2, 3, 5, 7, 9, 11],
+            'dorian': [0, 2, 3, 5, 7, 9, 10],
+            'phrygian': [0, 1, 3, 5, 7, 8, 10],
+            'lydian': [0, 2, 4, 6, 7, 9, 11],
+            'mixolydian': [0, 2, 4, 5, 7, 9, 10],
+        }
+
+        note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+        best_match = None
+        best_score = 0
+        best_root = 0
+
+        for root in range(12):
+            for scale_name, intervals in scales.items():
+                # Transpose scale to root
+                scale_pcs = [(root + i) % 12 for i in intervals]
+
+                # Calculate match score
+                in_scale = sum(pc_counts[pc] for pc in scale_pcs)
+                total = sum(pc_counts)
+
+                if total > 0:
+                    score = in_scale / total
+                    if score > best_score:
+                        best_score = score
+                        best_match = f"{note_names[root]} {scale_name}"
+                        best_root = root
+
+        # Calculate in-scale percentage
+        if best_match:
+            scale_intervals = scales[best_match.split()[1]]
+            scale_pcs = [(best_root + i) % 12 for i in scale_intervals]
+            in_scale_count = sum(1 for pc in pitch_classes if pc in scale_pcs)
+            in_scale_pct = (in_scale_count / len(pitch_classes) * 100) if pitch_classes else 0
+        else:
+            in_scale_pct = 0
+
+        return best_match, best_score, in_scale_pct
+
+    def _detect_phrases(self, notes: List[MelodyNote], gap_threshold: float = 1.0) -> List[List[MelodyNote]]:
+        """Detect melodic phrases separated by gaps."""
+        if not notes:
+            return []
+
+        phrases = []
+        current_phrase = [notes[0]]
+
+        for i in range(1, len(notes)):
+            gap = notes[i].start_time - notes[i-1].end_time
+            if gap > gap_threshold:
+                # New phrase
+                phrases.append(current_phrase)
+                current_phrase = [notes[i]]
+            else:
+                current_phrase.append(notes[i])
+
+        if current_phrase:
+            phrases.append(current_phrase)
+
+        return phrases
+
     def _error_result(self, audio_path: str, message: str) -> ReferenceAnalysisResult:
         """Create an error result."""
         return ReferenceAnalysisResult(
@@ -938,6 +1495,7 @@ class ReferenceAnalyzer:
             sections_by_type={},
             section_metrics=[],
             arrangement=None,
+            melody_analysis=None,
             production_targets=ProductionTargets(
                 by_section_type={},
                 overall={},
@@ -948,7 +1506,24 @@ class ReferenceAnalyzer:
         )
 
 
-def analyze_reference(audio_path: str, include_stems: bool = False) -> ReferenceAnalysisResult:
-    """Quick function to analyze a reference track."""
-    analyzer = ReferenceAnalyzer(include_stems=include_stems)
+def analyze_reference(
+    audio_path: str,
+    include_stems: bool = False,
+    include_melody: bool = False
+) -> ReferenceAnalysisResult:
+    """
+    Quick function to analyze a reference track.
+
+    Args:
+        audio_path: Path to audio file
+        include_stems: Whether to separate and analyze stems (slower)
+        include_melody: Whether to extract melody/pitch data (adds processing time)
+
+    Returns:
+        ReferenceAnalysisResult with complete analysis
+    """
+    analyzer = ReferenceAnalyzer(
+        include_stems=include_stems,
+        include_melody=include_melody
+    )
     return analyzer.analyze(audio_path)

@@ -6,40 +6,49 @@ Analyze your mixes, detect frequency clashes between stems, compare against prof
 
 ## Features
 
-- **Standard Input Structure** - Organize songs in `/inputs/<songname>/` with version tracking
+- **ALS Doctor** - Analyze Ableton projects directly (no export needed), get health scores and fix suggestions
+- **SQLite Database** - All analysis data persisted in `data/projects.db` for tracking progress
 - **Mix Quality Analyzer** - Clipping, dynamics, frequency balance, stereo width, loudness (LUFS)
 - **Stem Clash Detector** - Find frequency overlaps between stems that cause muddiness
 - **Reference Comparison** - Compare your mix against professional tracks stem-by-stem
 - **AI Stem Separation** - Separate any mix into vocals, drums, bass, other (Spleeter)
 - **AI Mastering** - Match your mix to a reference track using Matchering
 - **ALS Project Parser** - Extract tempo, tracks, MIDI data from Ableton .als files
+- **MIDI Extraction & Variations** - Extract MIDI clips from ALS files, generate variations (transpose, humanize, reverse), export as .mid files
 - **Comprehensive Reports** - HTML, text, or JSON reports with actionable suggestions
 
 ---
 
 ## Quick Start
 
-### Recommended: Standard Input Structure
+### Recommended: ALS Doctor (Analyze Ableton Projects Directly)
 
-1. Create your song folder:
-   ```
-   inputs/MySong/
-   ├── mix/v1/mix.flac      # Your mixdown
-   ├── stems/               # Exported stems
-   │   ├── kick.wav
-   │   ├── bass.wav
-   │   └── ...
-   └── references/          # Professional reference track
-       └── reference.wav
-   ```
+```bash
+cd projects/music-analyzer
 
-2. Run analysis:
-   ```bash
-   cd projects/music-analyzer
-   python analyze.py --song MySong
-   ```
+# Diagnose a single project
+python als_doctor.py diagnose "D:/Music/Projects/MySong.als"
 
-3. View report at `reports/MySong/MySong_v1_analysis_<date>.html`
+# Scan all projects in a folder
+python als_doctor.py scan "D:/Music/Projects/Ableton"
+
+# Get JSON output for AI coaching
+python als_doctor.py diagnose "MySong.als" --format json
+```
+
+### Analyze Audio Files
+
+```bash
+cd projects/music-analyzer
+
+# Single mixdown
+python analyze.py --audio my_mix.wav
+
+# Compare to reference
+python analyze.py --audio my_mix.wav --compare-ref pro_track.wav
+```
+
+View report at `reports/<songname>/<songname>_analysis_<date>.html`
 
 ---
 
@@ -64,17 +73,20 @@ Analyze your mixes, detect frequency clashes between stems, compare against prof
 
 ## Usage
 
-### Standard Structure (Recommended)
+### ALS Doctor (Recommended)
 
 ```bash
-# Analyze latest version
-python analyze.py --song MySong
+# Diagnose a project (health score, issues, recommendations)
+python als_doctor.py diagnose path/to/project.als
 
-# Analyze specific version
-python analyze.py --song MySong --version v1
+# Scan a folder of projects
+python als_doctor.py scan "D:/Music/Projects/Ableton"
+
+# JSON output for Claude coaching
+python als_doctor.py diagnose project.als --format json
 ```
 
-### Manual Mode
+### Audio Analysis
 
 ```bash
 # Single mixdown
@@ -119,8 +131,6 @@ python analyze.py --audio my_mix.wav --reference-id <track_id>
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--song` | | Song name in `/inputs/<song>/` (recommended) |
-| `--version` | | Mix version to analyze (e.g., v1, v2) |
 | `--audio` | `-a` | Path to audio file (WAV/FLAC) |
 | `--stems` | `-s` | Path to directory containing stems |
 | `--als` | | Path to Ableton .als project file |
@@ -324,7 +334,76 @@ Report: reports/MySong/MySong_v2_analysis_2026-01-15.html
 
 ---
 
-## ALS Doctor - Project Health Analysis (NEW)
+## AI Coaching Pipeline (NEW)
+
+Real-time mixing guidance with Claude Code acting as your mixing coach.
+
+### What It Does
+
+- **Analyzes** your track against professional reference profiles
+- **Identifies gaps** with severity levels (critical, significant, moderate, minor)
+- **Suggests fixes** mapped to specific device parameters
+- **Applies changes** via MCP with full undo/redo support
+- **Enables A/B comparison** to hear the difference
+
+### Quick Start
+
+1. **Setup MCP** (see Ableton Live Control section below)
+
+2. **Analyze your project**:
+   ```bash
+   cd projects/music-analyzer
+   python als_doctor.py diagnose "project.als" --format json --output analysis.json
+   ```
+
+3. **Ask Claude for help**:
+   - "My bass sounds muddy, how can I fix it?"
+   - "Compare my track to the trance reference profile"
+   - "What's the biggest issue with my mix?"
+
+4. **Claude will**:
+   - Load the analysis into the DeviceResolver
+   - Compare against reference profiles
+   - Suggest and apply fixes with full tracking
+   - Let you A/B compare and undo if needed
+
+### Session Features
+
+| Feature | Description |
+|---------|-------------|
+| **Undo/Redo** | Full history of all changes |
+| **A/B Comparison** | Toggle between original and modified |
+| **Persistence** | Session survives conversation restarts |
+| **Error Recovery** | Fallback to manual instructions if MCP fails |
+
+### Gap Analysis Severity Levels
+
+| Severity | Meaning | Standard Deviations |
+|----------|---------|---------------------|
+| Good | Within target range | < 0.5 |
+| Minor | Slight adjustment needed | 0.5 - 1.0 |
+| Moderate | Noticeable difference | 1.0 - 2.0 |
+| Significant | Clear issue | 2.0 - 3.0 |
+| Critical | Major problem | > 3.0 |
+
+### Value Conversions
+
+Claude automatically converts human-readable values to Ableton's normalized format:
+
+| Type | Example | Range |
+|------|---------|-------|
+| Frequency | 1000 Hz → 0.58 | 10-22000 Hz (log) |
+| Gain | -6 dB → 0.3 | -15 to +15 dB |
+| Time | 100 ms → 0.52 | 0.1-5000 ms (log) |
+
+### Technical Documentation
+
+- API Reference: `projects/music-analyzer/src/live_control/README.md`
+- Testing Guide: `projects/music-analyzer/src/live_control/TESTING.md`
+
+---
+
+## ALS Doctor - Project Health Analysis
 
 Analyze Ableton projects **without exporting audio**. Get instant health scores, detect device chain problems, compare versions, and rank your projects by workability.
 
@@ -401,8 +480,9 @@ als-doctor scan "D:\Ableton Projects" --min-number 22
 
 ## Troubleshooting
 
-**"Song not found in /inputs/"**
-- Create the folder structure: `inputs/MySong/mix/v1/mix.flac`
+**"File not found"**
+- Ensure the path to your .als or audio file is correct
+- Use absolute paths if relative paths don't work
 
 **"No audio files found"**
 - Ensure files are WAV, FLAC, or AIFF format

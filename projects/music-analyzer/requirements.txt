@@ -61,3 +61,6 @@ faiss-cpu>=1.7.0
 
 # Machine Learning utilities
 scikit-learn>=1.2.0
+
+# MIDI file creation/export
+midiutil>=1.2.1

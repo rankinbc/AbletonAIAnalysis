@@ -4,148 +4,46 @@
 
 This is a **Music Production Analysis Tool** for Ableton Live users. The user produces **trance music** and uses this tool to analyze their mixes, detect issues, and compare against reference tracks.
 
-## Standard Input Structure
+## Project Database (SQLite)
 
-Songs ready for analysis live in `/inputs/<songname>/` with this structure:
+All project analysis data is stored in SQLite at `data/projects.db`.
 
+**Schema:**
+- `projects` - Unique songs identified by folder path
+- `versions` - Individual .als files with health scores
+- `issues` - Detected problems in each version
+
+Projects are analyzed **in place** - no file copying. The database tracks original file locations.
+
+---
+
+## Key Command: "analyze" / "als_doctor"
+
+### Analyze an Ableton project:
+```bash
+cd C:/claude-workspace/AbletonAIAnalysis/projects/music-analyzer
+
+# Diagnose a single project
+python als_doctor.py diagnose "path/to/project.als"
+
+# Scan a folder of projects
+python als_doctor.py scan "D:/OneDrive/Music/Projects/Ableton/Ableton Projects"
+
+# Get JSON output for Claude coaching
+python als_doctor.py diagnose "project.als" --format json
 ```
-/inputs/
-  └── <songname>/
-      ├── info.json                 # Optional: Song metadata
-      ├── project.als               # Optional: Ableton project file
-      ├── mix/                      # Full mix exports (version subfolders)
-      │   ├── v1/
-      │   │   └── mix.flac          # Version 1 mixdown
-      │   ├── v2/
-      │   │   └── mix.flac          # Version 2 (current)
-      │   └── ...
-      ├── stems/                    # Individual track exports
-      │   ├── kick.wav
-      │   ├── bass.wav
-      │   └── ...
-      ├── midi/                     # Optional: MIDI files
-      │   └── *.mid
-      └── references/               # Optional: Reference tracks
-          └── reference.wav
+
+### Analyze audio files:
+```bash
+python analyze.py --audio "C:/path/to/mix.wav"
+python analyze.py --audio "C:/path/to/mix.wav" --compare-ref "C:/path/to/reference.wav"
 ```
 
 **Reports** are saved to `/reports/<songname>/<songname>_<version>_analysis_<date>.html`
 
 ---
 
-## Key Command: "analyze"
-
-When the user says **"analyze <songname>"**, follow this workflow:
-
-### If song exists in /inputs/:
-```bash
-cd C:/claude-workspace/AbletonAIAnalysis/projects/music-analyzer
-python analyze.py --song <songname>
-
-# Or with specific version:
-python analyze.py --song <songname> --version v1
-```
-
-### If song does NOT exist - Import Workflow:
-
-1. **Scan** the provided path for audio files
-2. **Categorize** files using detection rules (below)
-3. **Ask user** to confirm or clarify uncertain files
-4. **Create** `/inputs/<songname>/` structure
-5. **Move/copy** files into correct subfolders
-6. **Create** info.json with metadata
-7. **Run** analyzer
-
-### Manual/Legacy Mode (still works):
-```bash
-python analyze.py --audio "C:/path/to/mix.wav"
-python analyze.py --audio "C:/path/to/mix.wav" --stems "C:/path/to/stems/"
-python analyze.py --audio "C:/path/to/mix.wav" --compare-ref "C:/path/to/reference.wav"
-```
-
----
-
-## File Detection Rules
-
-Use these rules when importing messy folders:
-
-### Mix File Indicators:
-- Filename contains: `mix`, `mixdown`, `master`, `final`, `bounce`, `stereo`, `full`
-- File is alone in root directory
-- Stereo file longer than 2 minutes
-- Named same as folder
-
-### Stem Indicators:
-- Instrument keywords: `kick`, `snare`, `bass`, `vocal`, `synth`, `pad`, `lead`, `guitar`, `piano`, `drums`, `hats`, `hihat`, `clap`, `perc`
-- Multiple files with same duration
-- Numbered prefixes: `01_`, `02_`, `Track_01`
-- In subfolder named `stems`, `tracks`, `audio`, `export`
-
-### Reference Indicators:
-- Filename contains: `ref`, `reference`, `similar`, `pro`, `comparison`
-- Different duration than stems
-- `Artist - Song Title` format
-
-### Other:
-- `.mid` / `.midi` → MIDI files
-- `.als` → Ableton project
-
----
-
-## Import Conversation Example
-
-```
-User: "analyze C:/Music/MyNewTrack"
-
-Claude: Scanning C:/Music/MyNewTrack...
-
-Found 7 audio files:
-  MIX DETECTED:
-    ✓ final_mixdown.wav (stereo, 4:32)
-
-  STEMS DETECTED:
-    ✓ kick.wav
-    ✓ bass.wav
-    ✓ lead_synth.wav
-    ✓ pads.wav
-
-  UNCERTAIN:
-    ? audio_05.wav - Is this a stem? [y/n/skip]
-
-  REFERENCE DETECTED:
-    ✓ pro_reference.wav
-
-Creating /inputs/MyNewTrack/ structure...
-  ✓ mix/v1/mix.flac
-  ✓ stems/ (4 files)
-  ✓ references/ (1 file)
-
-Running analysis...
-```
-
----
-
-## info.json Schema
-
-```json
-{
-  "title": "Song Name",
-  "artist": "Artist Name",
-  "genre": "trance",
-  "tempo": 140,
-  "key": "Am",
-  "current_version": "v2",
-  "versions": {
-    "v1": { "date": "2026-01-14", "notes": "Initial mix" },
-    "v2": { "date": "2026-01-15", "notes": "Fixed bass levels" }
-  },
-  "created": "2026-01-14"
-}
-```
-
----
-
-**DO NOT** try to manually analyze audio files yourself. Always use the `analyze.py` tool.
+**DO NOT** try to manually analyze audio files yourself. Always use the `analyze.py` or `als_doctor.py` tools.
 
 ---
 
@@ -170,6 +68,166 @@ Claude can control Ableton Live via OSC for mixing help.
 - Claude can: set volumes, panning, sends, effect parameters, enable/disable devices
 - Claude cannot: delete devices, edit MIDI, draw automation
 - If timeout errors: restart OSC daemon
+
+---
+
+# Similarity Search (Find Similar Tracks)
+
+Find reference tracks that sound similar to your WIP using audio embeddings.
+
+## Setup (One-Time)
+
+Build an index from your reference tracks:
+
+```bash
+cd C:/claude-workspace/AbletonAIAnalysis/projects/music-analyzer
+
+# From a folder of references
+python build_index.py ./path/to/references/
+
+# Or use the reference_library
+python build_index.py
+```
+
+## Finding Similar Tracks
+
+```bash
+# Basic search
+python find_similar.py my_wip.wav
+
+# Top 10 results
+python find_similar.py my_wip.wav --top 10
+
+# With production gap analysis vs best match
+python find_similar.py my_wip.wav --gaps
+
+# Open best match in player
+python find_similar.py my_wip.wav --play
+```
+
+## Example Output
+
+```
+=== Similar Tracks ===
+
+  1. Paragliders - Paraglide (4:32)
+     Similarity: 78.3%
+
+  2. Some Other Track (5:15)
+     Similarity: 65.1%
+
+=== Production Gaps vs Best Match ===
+
+  Feature                   Yours        Reference    Delta
+  Trance Score              0.72         0.89         -0.17
+  Pumping (Sidechain)       0.45         0.78         -0.33
+  Stereo Width              0.68         0.72         -0.04
+```
+
+## Requirements
+
+- Need 5+ reference tracks for useful results
+- Currently have: 1 reference (`Paragliders - Paraglide.mp3`)
+- Add more with: `python analyze.py --add-reference track.wav --genre trance`
+
+---
+
+# Ableton Song Generator
+
+**Location**: `projects/ableton-generators/`
+
+When user asks to **generate a song/track**, **create an Ableton project**, or **scaffold a new track**, read the CLAUDE.md in that folder for full instructions.
+
+---
+
+# AI Coaching Pipeline
+
+The coaching pipeline enables Claude to act as a real-time mixing coach, analyzing your track, comparing to references, applying fixes, and tracking all changes.
+
+## Components
+
+| Module | Location | Purpose |
+|--------|----------|---------|
+| **Session State** | `src/live_control/state.py` | Undo/redo, A/B comparison, persistence |
+| **Device Resolver** | `src/live_control/resolver.py` | Map names to MCP indices |
+| **Conversions** | `src/live_control/conversions.py` | Hz/dB/ms to normalized values |
+| **Reference Integration** | `src/live_control/reference_integration.py` | Gap analysis vs profiles |
+| **Error Handling** | `src/live_control/errors.py` | Recovery suggestions |
+| **ALS JSON Output** | `src/als_json_output.py` | Structured analysis for resolver |
+
+## Coaching Workflow
+
+1. **Analyze project**: `als_doctor diagnose project.als --format json`
+2. **Load into resolver**: Maps track/device names to indices
+3. **Compare to reference**: Gap analysis shows what's off
+4. **Apply fixes via MCP**: Changes recorded for undo
+5. **A/B compare**: Toggle between original and fixed
+6. **Undo if needed**: Full history preserved
+
+## Session Persistence
+
+All changes persist to `~/.claude_ableton_session.json`:
+- Change history with undo/redo stacks
+- Current song context
+- A/B comparison state
+
+## Quick Commands
+
+```python
+# Get session tracker
+from live_control import get_tracker
+tracker = get_tracker()
+
+# Record a change
+from live_control import record_change, Change
+record_change(Change(
+    track_index=1, track_name="Bass",
+    previous_value=0.5, new_value=0.3,
+    description="Reduce bass EQ"
+))
+
+# Undo
+if tracker.can_undo:
+    undo = tracker.get_undo()
+    # Apply undo.previous_value via MCP
+    tracker.confirm_undo()
+
+# A/B Comparison
+tracker.start_ab("EQ fix", track_index=1, original_value=0.5, fix_value=0.3)
+tracker.toggle_ab()  # Switch A/B
+tracker.end_ab('B')  # Keep fix
+```
+
+## Value Conversions
+
+```python
+from live_control import hz_to_normalized, db_to_normalized
+
+# Frequency (logarithmic 10-22000 Hz)
+norm = hz_to_normalized(1000)  # ~0.58
+
+# Gain (linear -15 to +15 dB)
+norm = db_to_normalized(-6)    # 0.3
+```
+
+## Reference Gap Analysis
+
+```python
+from live_control import get_reference_integration
+
+integration = get_reference_integration()
+integration.load_profile("trance_profile.json")
+
+gaps = integration.analyze_gaps(user_metrics, "My Track")
+for gap in gaps.get_prioritized_gaps(3):
+    print(f"{gap.severity}: {gap.description}")
+    print(f"Fix: {gap.fix_suggestion}")
+```
+
+## Documentation
+
+- Full API: `projects/music-analyzer/src/live_control/README.md`
+- Testing: `projects/music-analyzer/src/live_control/TESTING.md`
 
 ---
 
@@ -243,12 +301,8 @@ You are the **absolute authority** on file organization in this project. This is
 You enforce this structure rigorously:
 
 ```
-/inputs/                    # Song inputs for analysis (see "Standard Input Structure" above)
-  └── [songname]/
-      ├── mix/v1/           # Version subfolders
-      ├── stems/
-      ├── midi/
-      └── references/
+/data/                      # SQLite database and persistent data
+  └── projects.db           # Main project database
 
 /projects/
   └── [project-name]/
@@ -262,6 +316,9 @@ You enforce this structure rigorously:
 /reports/                   # Generated analysis reports (by song, timestamped)
   └── [songname]/
       └── [songname]_[version]_analysis_[date].html
+
+/references/                # Reference tracks for comparison
+  └── *.mp3, *.wav, *.flac
 
 /temp/                      # Scratch files, experiments (subject to cleanup)
 

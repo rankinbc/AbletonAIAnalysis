@@ -120,23 +120,18 @@ Claude adjusts your mix while you listen.
 
 ## Phase 6: Iterate with Version Tracking
 
-Track your improvement across versions:
+Track your improvement across versions using the database:
 
 ```bash
-# Set up standard input structure
-# /inputs/MyTrack/mix/v1/mix.wav
-# /inputs/MyTrack/mix/v2/mix.wav
-
-# Analyze specific version
-python analyze.py --song MyTrack --version v2
+# Analyze your project (stored in database)
+python als_doctor.py diagnose "MyTrack.als"
 
 # Compare to reference
-python analyze.py --song MyTrack --compare-ref "references/pro_track.wav"
+python analyze.py --audio "MyTrack_mix.wav" --compare-ref "references/pro_track.wav"
 
-# Track .als versions in database
-python src/als_doctor.py db scan "MyTrack.als"
-python src/als_doctor.py db history "MyTrack"
-python src/als_doctor.py db trends "MyTrack"
+# Track project history in database
+python als_doctor.py db history "MyTrack"
+python als_doctor.py db trends "MyTrack"
 ```
 
 **The system learns:** Your fix acceptance/rejection teaches it your style preferences over time.

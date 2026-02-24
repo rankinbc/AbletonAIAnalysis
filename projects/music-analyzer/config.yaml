@@ -472,3 +472,82 @@ presets:
     frequency:
       bass_excessive_threshold: 55
       sub_bass_minimum_drops: 0.12          # More sub required
+
+# -----------------------------------------------------------------------------
+# TRANCE ARRANGEMENT SCORING
+# -----------------------------------------------------------------------------
+# Conventions for scoring arrangement structure against trance genre standards.
+# Used by arrangement_scorer.py to evaluate song structure.
+
+trance_arrangement:
+  # Section length conventions (in bars)
+  # Based on standard trance structure at 138 BPM
+  section_lengths:
+    intro:
+      min: 16           # Minimum acceptable (8 bars too short for DJ mixing)
+      max: 64           # Maximum acceptable
+      standard: 32      # Ideal length
+    buildup:
+      min: 8            # Minimum acceptable
+      max: 32           # Maximum acceptable
+      standard: 16      # Ideal length
+    drop:
+      min: 16           # Minimum acceptable
+      max: 64           # Maximum acceptable
+      standard: 32      # Ideal length
+    breakdown:
+      min: 16           # Minimum acceptable
+      max: 64           # Maximum acceptable
+      standard: 32      # Ideal length
+    outro:
+      min: 16           # Minimum acceptable
+      max: 64           # Maximum acceptable
+      standard: 32      # Ideal length
+
+  # The 8-bar rule: all sections should be divisible by this
+  bar_multiple: 8
+
+  # Energy contrast requirements
+  energy_contrast:
+    drop_vs_breakdown_min_db: 6.0     # Minimum dB difference for acceptable contrast
+    drop_vs_breakdown_target_db: 10.0 # Target dB difference for excellent contrast
+
+  # Required sections for full structure score
+  # Missing these will penalize the score
+  required_sections:
+    - intro
+    - drop
+    - breakdown
+    - outro
+
+  # Preferred sections (bonus points if present)
+  preferred_sections:
+    - buildup
+
+  # Scoring component weights (must sum to 1.0)
+  weights:
+    structure: 0.25       # Has expected sections (intro/drop/breakdown/outro)
+    length: 0.20          # Section lengths match conventions
+    eight_bar: 0.15       # All sections divisible by 8
+    energy_contrast: 0.25 # Drop energy >> breakdown energy
+    flow: 0.15            # Logical energy progression
+
+  # Grade thresholds (minimum score for each grade)
+  grades:
+    A: 85
+    B: 70
+    C: 55
+    D: 40
+    # Below 40 = F
+
+  # Severity thresholds for issues
+  severity:
+    # Energy contrast issues
+    contrast_critical_db: 3.0   # Below this = CRITICAL
+    contrast_warning_db: 6.0    # Below this = WARNING
+
+    # Length issues
+    length_way_off_multiplier: 2.0  # If length > 2x max or < 0.5x min = CRITICAL
+
+    # 8-bar violations
+    eight_bar_violation_penalty: 15  # Points deducted per violation

@@ -184,9 +184,6 @@ python analyze.py --stems "path/to/stems/"
 
 # Combined with mix analysis
 python analyze.py --audio mix.wav --stems "path/to/stems/"
-
-# Using standard input structure (stems in /inputs/MySong/stems/)
-python analyze.py --song MySong
 ```
 
 **What you get:**

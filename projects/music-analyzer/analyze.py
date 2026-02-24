@@ -13,7 +13,6 @@ Usage:
 
 import sys
 import os
-import shutil
 from pathlib import Path
 
 # Add src to path for imports
@@ -70,65 +69,6 @@ def print_recommendation(num: int, text: str):
     print(f"  {Fore.GREEN}{num}.{Style.RESET_ALL} {text}")
 
 
-def detect_song_structure(song_name: str, inputs_dir: str = "./inputs"):
-    """
-    Detect files from standard /inputs/<songname>/ structure.
-
-    Returns dict with paths to: audio, stems, als, reference, version
-    """
-    inputs_path = Path(inputs_dir)
-    song_path = inputs_path / song_name
-
-    if not song_path.exists():
-        return None
-
-    result = {
-        'audio': None,
-        'stems': None,
-        'als': None,
-        'reference': None,
-        'version': 'v1',
-        'song_path': str(song_path)
-    }
-
-    # Detect mix version (find latest version folder in mix/)
-    mix_dir = song_path / 'mix'
-    if mix_dir.exists():
-        version_dirs = sorted([d for d in mix_dir.iterdir() if d.is_dir() and d.name.startswith('v')],
-                              key=lambda x: int(x.name[1:]) if x.name[1:].isdigit() else 0,
-                              reverse=True)
-        if version_dirs:
-            latest_version = version_dirs[0]
-            result['version'] = latest_version.name
-            # Find mix file in version folder
-            for ext in ['*.flac', '*.wav', '*.FLAC', '*.WAV']:
-                mix_files = list(latest_version.glob(ext))
-                if mix_files:
-                    result['audio'] = str(mix_files[0])
-                    break
-
-    # Detect stems directory
-    stems_dir = song_path / 'stems'
-    if stems_dir.exists() and any(stems_dir.glob('*.wav')) or any(stems_dir.glob('*.flac')):
-        result['stems'] = str(stems_dir)
-
-    # Detect ALS file
-    als_files = list(song_path.glob('*.als'))
-    if als_files:
-        result['als'] = str(als_files[0])
-
-    # Detect reference tracks
-    refs_dir = song_path / 'references'
-    if refs_dir.exists():
-        for ext in ['*.flac', '*.wav', '*.FLAC', '*.WAV']:
-            ref_files = list(refs_dir.glob(ext))
-            if ref_files:
-                result['reference'] = str(ref_files[0])
-                break
-
-    return result
-
-
 @click.command()
 @click.option('--audio', '-a', type=click.Path(exists=True),
               help='Path to audio file (WAV/FLAC) to analyze')
@@ -164,10 +104,6 @@ def detect_song_structure(song_name: str, inputs_dir: str = "./inputs"):
               help='Genre tag when adding reference (e.g., trance, house)')
 @click.option('--tags', type=str,
               help='Comma-separated tags when adding reference')
-@click.option('--song', type=str,
-              help='Song name in /inputs/<song>/ standard structure (auto-detects files)')
-@click.option('--version', 'mix_version', type=str, default=None,
-              help='Mix version to analyze (e.g., v1, v2). Auto-detects latest if not specified.')
 @click.option('--config', 'config_path', type=click.Path(exists=True),
               help='Path to custom config.yaml file')
 @click.option('--no-sections', 'no_sections', is_flag=True,
@@ -182,6 +118,8 @@ def detect_song_structure(song_name: str, inputs_dir: str = "./inputs"):
               help='Use genre-specific target values for analysis')
 @click.option('--trance-score', 'trance_score', is_flag=True,
               help='Compute trance DNA score (tempo, pumping, energy, supersaw, 303, etc.)')
+@click.option('--arrangement-score', 'arrangement_score', is_flag=True,
+              help='Score arrangement structure against trance conventions (section lengths, 8-bar rule, energy contrast)')
 @click.option('--gap-analysis', 'gap_analysis', type=click.Path(exists=True),
               help='Compare audio against a reference profile (JSON) and show production gaps')
 @click.option('--prescriptive', 'prescriptive_fixes', is_flag=True,
@@ -211,18 +149,13 @@ def detect_song_structure(song_name: str, inputs_dir: str = "./inputs"):
               help='Path to learning database (default: learning_data.db)')
 def main(audio, stems, als, reference, master, output, output_format, verbose,
          separate, compare_ref, analyze_reference, deep_analysis, add_reference, reference_id, list_references, genre, tags,
-         song, mix_version, config_path, no_sections, no_stems, no_midi, ai_recommend, genre_preset, trance_score, gap_analysis,
+         config_path, no_sections, no_stems, no_midi, ai_recommend, genre_preset, trance_score, arrangement_score, gap_analysis,
          prescriptive_fixes, build_embeddings, embedding_output, find_similar, embedding_index, top_k,
          collect_feedback, learning_stats, tune_profile, tuned_output, reset_learning, learning_db_path):
     """
     Analyze Ableton projects and audio files for mixing issues.
 
     Examples:
-
-    \b
-    Analyze from standard input structure (recommended):
-        python analyze.py --song MySong
-        python analyze.py --song MySong --version v1
 
     \b
     Analyze a single mixdown:
@@ -264,6 +197,10 @@ def main(audio, stems, als, reference, master, output, output_format, verbose,
     \b
     Compute trance DNA score (sidechain, supersaw, 303, energy, etc.):
         python analyze.py --audio my_mix.wav --trance-score
+
+    \b
+    Score arrangement structure against trance conventions:
+        python analyze.py --audio my_mix.wav --arrangement-score
 
     \b
     Compare WIP against reference profile (gap analysis):
@@ -622,6 +559,94 @@ def main(audio, stems, als, reference, master, output, output_format, verbose,
                 traceback.print_exc()
         return
 
+    # Handle --arrangement-score (standalone arrangement structure analysis)
+    if arrangement_score and audio:
+        print_section("Arrangement Analysis")
+        try:
+            from src.structure_detector import StructureDetector
+            from src.arrangement_scorer import ArrangementScorer, IssueSeverity
+
+            print(f"  Analyzing: {Path(audio).name}")
+            print(f"  Detecting song structure...")
+            print()
+
+            # Detect structure
+            detector = StructureDetector(verbose=verbose)
+            structure = detector.detect(audio)
+
+            if not structure.success:
+                print(f"  {Fore.RED}[ERROR] Structure detection failed: {structure.error_message}{Style.RESET_ALL}")
+                return
+
+            # Score arrangement
+            scorer = ArrangementScorer(config=cfg)
+            score = scorer.score(structure)
+
+            # Print results
+            print(f"  {Fore.CYAN}ARRANGEMENT SCORE: {score.overall_score:.0f}/100 ({score.grade}){Style.RESET_ALL}")
+            print(f"  Sections: {score.section_count} | Bars: {score.total_bars} | Tempo: {score.detected_tempo:.0f} BPM")
+            print()
+
+            # Section map
+            print(f"  {Fore.WHITE}Section Map:{Style.RESET_ALL}")
+            for sec in score.section_scores:
+                status = "OK" if sec.length_score >= 70 else "WARN" if sec.length_score >= 50 else "ISSUE"
+                color = Fore.GREEN if status == "OK" else Fore.YELLOW if status == "WARN" else Fore.RED
+                eight_bar_mark = "" if sec.eight_bar_compliant else f" {Fore.YELLOW}(not /8){Style.RESET_ALL}"
+                print(f"    [{sec.time_range_formatted}] {sec.section_type.title():12} | {sec.duration_bars:3} bars | Score: {sec.length_score:.0f}{eight_bar_mark}")
+            print()
+
+            # Component breakdown
+            print(f"  {Fore.WHITE}Component Scores:{Style.RESET_ALL}")
+            for component, value in score.component_scores.items():
+                status = "OK" if value >= 70 else "WARN" if value >= 50 else "ISSUE"
+                color = Fore.GREEN if status == "OK" else Fore.YELLOW if status == "WARN" else Fore.RED
+                print(f"    [{color}{status:5}{Style.RESET_ALL}] {component.replace('_', ' ').title():20}: {value:.0f}/100")
+            print()
+
+            # Issues
+            if score.issues:
+                print(f"  {Fore.WHITE}Issues:{Style.RESET_ALL}")
+                for issue in score.issues:
+                    if issue.severity == IssueSeverity.CRITICAL:
+                        color = Fore.RED
+                    elif issue.severity == IssueSeverity.WARNING:
+                        color = Fore.YELLOW
+                    else:
+                        color = Fore.CYAN
+                    print(f"    [{color}{issue.severity.value}{Style.RESET_ALL}] {issue.message}")
+                    print(f"           {Fore.WHITE}Fix:{Style.RESET_ALL} {issue.fix}")
+                print()
+
+            # Suggestions
+            if score.suggestions:
+                print(f"  {Fore.WHITE}Suggestions:{Style.RESET_ALL}")
+                for i, suggestion in enumerate(score.suggestions, 1):
+                    print(f"    {i}. {suggestion}")
+                print()
+
+            # Save JSON output
+            from datetime import datetime
+            output_dir = Path(output)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            json_filename = f"arrangement_score_{Path(audio).stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            json_path = output_dir / json_filename
+
+            import json
+            with open(json_path, 'w') as f:
+                json.dump(score.to_dict(), f, indent=2, default=str)
+            print(f"  {Fore.GREEN}[OK] Analysis saved to: {json_path}{Style.RESET_ALL}")
+
+        except ImportError as e:
+            print(f"  {Fore.RED}[ERROR] Arrangement scoring module not available: {e}{Style.RESET_ALL}")
+            print(f"  Make sure structure_detector.py and arrangement_scorer.py are present")
+        except Exception as e:
+            print(f"  {Fore.RED}[ERROR] Arrangement analysis failed: {e}{Style.RESET_ALL}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+        return
+
     # Handle --build-embeddings (build similarity index)
     if build_embeddings:
         print_section("Building Embeddings Index")
@@ -951,60 +976,9 @@ def main(audio, stems, als, reference, master, output, output_format, verbose,
                 traceback.print_exc()
         return
 
-    # Handle --song flag (auto-detect from standard structure)
-    detected_version = mix_version or 'v1'
-    if song:
-        print_section(f"Detecting Song Structure: {song}")
-        # Look for inputs directory relative to script location or current directory
-        script_dir = Path(__file__).parent.parent.parent  # Go up to project root
-        inputs_dir = script_dir / 'inputs'
-
-        song_info = detect_song_structure(song, str(inputs_dir))
-
-        if song_info is None:
-            click.echo(f"{Fore.RED}Error: Song '{song}' not found in {inputs_dir}{Style.RESET_ALL}")
-            click.echo(f"Expected structure: {inputs_dir}/{song}/")
-            sys.exit(1)
-
-        # Override version if specified
-        if mix_version:
-            # Check if specified version exists
-            version_dir = Path(song_info['song_path']) / 'mix' / mix_version
-            if version_dir.exists():
-                detected_version = mix_version
-                # Find mix file in specified version folder
-                for ext in ['*.flac', '*.wav', '*.FLAC', '*.WAV']:
-                    mix_files = list(version_dir.glob(ext))
-                    if mix_files:
-                        song_info['audio'] = str(mix_files[0])
-                        break
-            else:
-                click.echo(f"{Fore.YELLOW}Warning: Version {mix_version} not found, using {song_info['version']}{Style.RESET_ALL}")
-                detected_version = song_info['version']
-        else:
-            detected_version = song_info['version']
-
-        # Populate variables from detected structure (don't override if already specified)
-        if not audio and song_info['audio']:
-            audio = song_info['audio']
-        if not stems and song_info['stems']:
-            stems = song_info['stems']
-        if not als and song_info['als']:
-            als = song_info['als']
-        if not reference and song_info['reference']:
-            reference = song_info['reference']
-
-        # Report what was detected
-        print(f"  Song: {song}")
-        print(f"  Version: {detected_version}")
-        print(f"  Mix: {Path(audio).name if audio else 'Not found'}")
-        print(f"  Stems: {'Found' if stems else 'Not found'}")
-        print(f"  ALS: {Path(als).name if als else 'Not found'}")
-        print(f"  Reference: {Path(reference).name if reference else 'Not found'}")
-
     # Validate inputs
-    if not any([audio, stems, als, separate, compare_ref, song, analyze_reference]):
-        click.echo(f"{Fore.RED}Error: Please provide at least one of: --song, --audio, --stems, --als, --separate, --compare-ref, or --analyze-reference{Style.RESET_ALL}")
+    if not any([audio, stems, als, separate, compare_ref, analyze_reference]):
+        click.echo(f"{Fore.RED}Error: Please provide at least one of: --audio, --stems, --als, --separate, --compare-ref, or --analyze-reference{Style.RESET_ALL}")
         click.echo("Run 'python analyze.py --help' for usage information.")
         sys.exit(1)
 
@@ -1378,8 +1352,8 @@ def main(audio, stems, als, reference, master, output, output_format, verbose,
     print_section("Generating Report")
     try:
         reporter = ReportGenerator(output_dir=output)
-        # Use song name if provided, otherwise derive from als/audio filename
-        project_name = song if song else (Path(als).stem if als else (Path(audio).stem if audio else "analysis"))
+        # Derive project name from als/audio filename
+        project_name = Path(als).stem if als else (Path(audio).stem if audio else "analysis")
 
         report_path = reporter.generate_full_report(
             audio_analysis=audio_result,
@@ -1388,47 +1362,10 @@ def main(audio, stems, als, reference, master, output, output_format, verbose,
             mastering_result=mastering_result,
             comparison_result=comparison_result,
             project_name=project_name,
-            output_format=output_format,
-            version=detected_version
+            output_format=output_format
         )
 
         print(f"  {Fore.GREEN}[OK] Report saved to: {report_path}{Style.RESET_ALL}")
-
-        # Copy input files to output folder
-        report_dir = Path(report_path).parent
-        copied_files = []
-
-        # Copy the mix/audio file
-        if audio:
-            audio_path = Path(audio)
-            # Name format: mix_<original_name>
-            dest_name = f"mix_{audio_path.name}"
-            dest_path = report_dir / dest_name
-            try:
-                shutil.copy2(audio_path, dest_path)
-                copied_files.append(('Mix', dest_name))
-            except Exception as copy_err:
-                if verbose:
-                    print(f"  {Fore.YELLOW}Warning: Could not copy mix file: {copy_err}{Style.RESET_ALL}")
-
-        # Copy the reference file (from --reference or --compare-ref)
-        ref_file = reference or compare_ref
-        if ref_file:
-            ref_path = Path(ref_file)
-            # Name format: reference_<original_name>
-            dest_name = f"reference_{ref_path.name}"
-            dest_path = report_dir / dest_name
-            try:
-                shutil.copy2(ref_path, dest_path)
-                copied_files.append(('Reference', dest_name))
-            except Exception as copy_err:
-                if verbose:
-                    print(f"  {Fore.YELLOW}Warning: Could not copy reference file: {copy_err}{Style.RESET_ALL}")
-
-        if copied_files:
-            print(f"\n  {Fore.CYAN}Audio files copied to output:{Style.RESET_ALL}")
-            for file_type, file_name in copied_files:
-                print(f"    {file_type}: {file_name}")
 
     except Exception as e:
         print(f"  {Fore.RED}[ERROR] Error generating report: {e}{Style.RESET_ALL}")
@@ -1454,7 +1391,7 @@ def main(audio, stems, als, reference, master, output, output_format, verbose,
 
     # Final summary
     date_str = __import__('datetime').datetime.now().strftime("%Y-%m-%d")
-    report_base = f"{output}/{project_name}/{project_name}_{detected_version}_analysis_{date_str}"
+    report_base = f"{output}/{project_name}/{project_name}_analysis_{date_str}"
     json_report_path = f"{report_base}.json"
 
     print(f"""

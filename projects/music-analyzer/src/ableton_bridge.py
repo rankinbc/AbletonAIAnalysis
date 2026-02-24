@@ -602,6 +602,264 @@ class AbletonBridge:
             self._last_error = f"Failed to stop playback: {str(e)}"
             return False
 
+    # ==================== Locator/Cue Point Methods ====================
+
+    def get_cue_points(self) -> List[Dict[str, Any]]:
+        """Get all cue points/locators from the current set.
+
+        Returns:
+            List of cue points with name and time
+        """
+        if not self.is_connected or self._live_set is None:
+            return []
+        try:
+            # Try to access cue_points if available in pylive
+            if hasattr(self._live_set, 'cue_points'):
+                return [
+                    {'name': cp.name, 'time': cp.time}
+                    for cp in self._live_set.cue_points
+                ]
+            # Fallback: return empty list (feature not supported)
+            return []
+        except Exception as e:
+            self._last_error = f"Failed to get cue points: {str(e)}"
+            return []
+
+    def add_locator(self, name: str, time_beats: float) -> bool:
+        """Add a locator/cue point at the specified position.
+
+        Note: This requires AbletonOSC to support cue point creation.
+        If not supported, returns False with instructions in last_error.
+
+        Args:
+            name: Name for the locator
+            time_beats: Position in beats
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.is_connected or self._live_set is None:
+            self._last_error = "Not connected to Ableton"
+            return False
+
+        try:
+            # Try using pylive's cue_points if available
+            if hasattr(self._live_set, 'cue_points') and hasattr(self._live_set.cue_points, 'add'):
+                self._live_set.cue_points.add(time_beats, name)
+                return True
+
+            # Try raw OSC message
+            if OSC_AVAILABLE and self._osc_client:
+                # AbletonOSC cue point path (may vary by version)
+                self._osc_client.send_message('/live/song/cue_points/add', [time_beats, name])
+                return True
+
+            # Feature not supported
+            self._last_error = (
+                f"Locator creation not supported via OSC. "
+                f"Please manually add locator '{name}' at beat {time_beats}"
+            )
+            return False
+
+        except Exception as e:
+            self._last_error = f"Failed to add locator: {str(e)}"
+            return False
+
+    def clear_locators(self) -> bool:
+        """Remove all locators from the current set.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.is_connected or self._live_set is None:
+            self._last_error = "Not connected to Ableton"
+            return False
+
+        try:
+            # Try using pylive's cue_points if available
+            if hasattr(self._live_set, 'cue_points') and hasattr(self._live_set.cue_points, 'delete_all'):
+                self._live_set.cue_points.delete_all()
+                return True
+
+            # Try raw OSC message
+            if OSC_AVAILABLE and self._osc_client:
+                self._osc_client.send_message('/live/song/cue_points/delete_all', [])
+                return True
+
+            self._last_error = "Locator deletion not supported via OSC. Please delete manually."
+            return False
+
+        except Exception as e:
+            self._last_error = f"Failed to clear locators: {str(e)}"
+            return False
+
+    def delete_locator(self, name: str = None, time_beats: float = None, index: int = None) -> bool:
+        """Delete a specific locator by name, time, or index.
+
+        Args:
+            name: Name of the locator to delete (optional)
+            time_beats: Position in beats of locator to delete (optional)
+            index: Index of the locator to delete (optional, preferred if known)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.is_connected or self._live_set is None:
+            self._last_error = "Not connected to Ableton"
+            return False
+
+        try:
+            # Try by index first (most reliable)
+            if index is not None:
+                if hasattr(self._live_set, 'cue_points') and hasattr(self._live_set.cue_points, 'delete'):
+                    self._live_set.cue_points.delete(index)
+                    return True
+                if OSC_AVAILABLE and self._osc_client:
+                    self._osc_client.send_message('/live/song/cue_points/delete', [index])
+                    return True
+
+            # Try to find by name/time and get index
+            cue_points = self.get_cue_points()
+            for i, cp in enumerate(cue_points):
+                match_name = name is None or cp.get('name', '') == name
+                match_time = time_beats is None or abs(cp.get('time', 0) - time_beats) < 0.1
+                if match_name and match_time:
+                    # Found matching cue point, delete by index
+                    if hasattr(self._live_set, 'cue_points') and hasattr(self._live_set.cue_points, 'delete'):
+                        self._live_set.cue_points.delete(i)
+                        return True
+                    if OSC_AVAILABLE and self._osc_client:
+                        self._osc_client.send_message('/live/song/cue_points/delete', [i])
+                        return True
+
+            self._last_error = f"Locator not found or deletion not supported via OSC"
+            return False
+
+        except Exception as e:
+            self._last_error = f"Failed to delete locator: {str(e)}"
+            return False
+
+    def update_locator(self, old_name: str, old_time_beats: float,
+                       new_name: str = None, new_time_beats: float = None) -> bool:
+        """Update a locator's name and/or position.
+
+        Most OSC implementations don't support direct updates, so this
+        deletes the old locator and adds a new one.
+
+        Args:
+            old_name: Current name of the locator
+            old_time_beats: Current position in beats
+            new_name: New name (uses old_name if None)
+            new_time_beats: New position in beats (uses old position if None)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.is_connected or self._live_set is None:
+            self._last_error = "Not connected to Ableton"
+            return False
+
+        # Use old values if new ones not provided
+        final_name = new_name if new_name is not None else old_name
+        final_time = new_time_beats if new_time_beats is not None else old_time_beats
+
+        try:
+            # Delete old locator
+            deleted = self.delete_locator(name=old_name, time_beats=old_time_beats)
+            if not deleted:
+                # If delete failed but we got a "not found" error, try adding anyway
+                if "not found" not in (self._last_error or "").lower():
+                    return False
+
+            # Add new locator
+            added = self.add_locator(final_name, final_time)
+            if not added:
+                # Try to restore old locator if add failed
+                self.add_locator(old_name, old_time_beats)
+                return False
+
+            return True
+
+        except Exception as e:
+            self._last_error = f"Failed to update locator: {str(e)}"
+            return False
+
+    def get_cue_points_detailed(self) -> List[Dict[str, Any]]:
+        """Get all cue points with detailed metadata including index.
+
+        Returns:
+            List of cue points with name, time, and index
+        """
+        if not self.is_connected or self._live_set is None:
+            return []
+        try:
+            cue_points = []
+            if hasattr(self._live_set, 'cue_points'):
+                for i, cp in enumerate(self._live_set.cue_points):
+                    cue_points.append({
+                        'index': i,
+                        'name': cp.name if hasattr(cp, 'name') else f"Marker {i}",
+                        'time_beats': cp.time if hasattr(cp, 'time') else 0,
+                        'time_seconds': self._beats_to_seconds(cp.time) if hasattr(cp, 'time') else 0
+                    })
+            return cue_points
+        except Exception as e:
+            self._last_error = f"Failed to get cue points: {str(e)}"
+            return []
+
+    def _beats_to_seconds(self, beats: float) -> float:
+        """Convert beats to seconds using current tempo."""
+        if self._live_set and hasattr(self._live_set, 'tempo') and self._live_set.tempo > 0:
+            return (beats / self._live_set.tempo) * 60.0
+        return 0.0
+
+    def send_template(self, template) -> Tuple[bool, str, List[Dict]]:
+        """Send an arrangement template to Ableton.
+
+        This will:
+        1. Set the tempo
+        2. Attempt to add locators for each section
+
+        Args:
+            template: ArrangementTemplate object with sections and BPM
+
+        Returns:
+            Tuple of (success, message, locators_to_add_manually)
+        """
+        if not self.is_connected or self._live_set is None:
+            return False, "Not connected to Ableton", []
+
+        results = []
+        manual_locators = []
+
+        # Set tempo
+        if self.set_tempo(template.bpm):
+            results.append(f"Set tempo to {template.bpm} BPM")
+        else:
+            results.append(f"Failed to set tempo: {self.last_error}")
+
+        # Try to add locators
+        locators = template.to_locators()
+        locators_added = 0
+
+        for loc in locators:
+            if self.add_locator(loc['name'], loc['time_beats']):
+                locators_added += 1
+            else:
+                # Add to manual list
+                manual_locators.append(loc)
+
+        if locators_added > 0:
+            results.append(f"Added {locators_added} locators")
+
+        if manual_locators:
+            results.append(f"{len(manual_locators)} locators need to be added manually")
+
+        success = locators_added > 0 or len(manual_locators) == 0
+        message = ". ".join(results)
+
+        return success, message, manual_locators
+
     # ==================== Utility Methods ====================
 
     def find_device_parameter(

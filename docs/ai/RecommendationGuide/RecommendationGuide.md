@@ -500,3 +500,65 @@ The producer should be able to:
 3. See significant improvement in their mix
 
 Focus on **impact**, not completeness. A producer who fixes 5 critical issues will have a better mix than one who's overwhelmed by 50 minor suggestions.
+
+---
+
+## AI Coaching Pipeline Integration
+
+When working with Ableton Live directly, Claude can apply fixes from this guide via the Live Control system.
+
+### How It Works
+
+1. **Analysis** - Use ALS Doctor or audio analyzer to generate JSON
+2. **Gap Analysis** - Compare against reference profiles
+3. **Recommendation** - Generate prioritized fix list (this guide)
+4. **Apply Fixes** - Use MCP tools to modify Ableton directly
+5. **Track Changes** - All modifications recorded for undo
+6. **A/B Compare** - User can toggle between original and fixed
+
+### Connecting Recommendations to Live Control
+
+When your recommendations map to specific parameters:
+
+| Recommendation | Live Control Action |
+|---------------|---------------------|
+| "Reduce bass 3dB at 200Hz" | `resolver.resolve_fix({'track_name': 'Bass', 'device_name': 'EQ Eight', 'parameter_name': 'Band 2 Gain', 'value': -3})` |
+| "Increase stereo width" | Set Utility Width parameter |
+| "Apply high-pass at 30Hz" | Set EQ Eight low band frequency |
+
+### Value Conversion
+
+Human-readable values are converted automatically:
+
+```python
+from live_control import hz_to_normalized, db_to_normalized
+
+# "Cut 3dB at 200Hz"
+freq_norm = hz_to_normalized(200)   # 0.34
+gain_norm = db_to_normalized(-3)    # 0.40
+```
+
+### Session Tracking
+
+All applied fixes are recorded:
+- Full undo/redo support
+- Session persists across conversations
+- A/B comparison for listening tests
+
+### Reference Profile Integration
+
+Gap analysis uses the same severity levels as this guide:
+
+| Guide Severity | Gap Analysis Severity | Std Devs from Mean |
+|---------------|----------------------|-------------------|
+| CRITICAL | critical | > 3.0 |
+| SEVERE | significant | 2.0 - 3.0 |
+| MODERATE | moderate | 1.0 - 2.0 |
+| MINOR | minor | 0.5 - 1.0 |
+| - | good | < 0.5 |
+
+### Documentation
+
+- Live Control API: `projects/music-analyzer/src/live_control/README.md`
+- Testing Guide: `projects/music-analyzer/src/live_control/TESTING.md`
+- Session State: `projects/music-analyzer/src/live_control/state.py`

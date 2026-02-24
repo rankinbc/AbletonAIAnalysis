@@ -881,6 +881,9 @@ BASE_TEMPLATE = """
             <ul class="navbar-nav">
                 <li><a href="/" class="{{ 'active' if active == 'home' else '' }}">Home</a></li>
                 <li><a href="/projects" class="{{ 'active' if active == 'projects' else '' }}">Projects</a></li>
+                <li><a href="/arrangement" class="{{ 'active' if active == 'arrangement' else '' }}">Arrangement</a></li>
+                <li><a href="/templates" class="{{ 'active' if active == 'templates' else '' }}">Templates</a></li>
+                <li><a href="/midi" class="{{ 'active' if active == 'midi' else '' }}">MIDI</a></li>
                 <li><a href="/insights" class="{{ 'active' if active == 'insights' else '' }}">Insights</a></li>
                 <li><a href="/settings" class="{{ 'active' if active == 'settings' else '' }}">Settings</a></li>
             </ul>
@@ -1771,6 +1774,3031 @@ function swapVersions() {
 """
 
 
+ARRANGEMENT_CONTENT = """
+<h1 style="margin-bottom: 30px;">Arrangement Analysis</h1>
+
+<div class="card" style="margin-bottom: 20px;">
+    <div style="display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap;">
+        <div style="flex: 1; min-width: 300px;">
+            <label class="settings-label">Audio File</label>
+            <select class="settings-input" id="audioFile" style="width: 100%;">
+                <option value="">-- Select an audio file --</option>
+                {% for file in audio_files %}
+                <option value="{{ file.path }}">{{ file.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button class="btn btn-primary" onclick="analyzeArrangement()" id="analyzeBtn">
+            Analyze
+        </button>
+    </div>
+</div>
+
+<div id="loadingIndicator" style="display: none; text-align: center; padding: 40px;">
+    <div style="font-size: 2rem; margin-bottom: 10px;">⏳</div>
+    <p>Analyzing arrangement... This may take a minute.</p>
+</div>
+
+<div id="resultsContainer" style="display: none;">
+    <!-- Overall Score -->
+    <div class="card" style="margin-bottom: 20px;">
+        <h2 class="card-title">Overall Score</h2>
+        <div style="display: flex; align-items: center; gap: 20px;">
+            <div id="overallScore" style="font-size: 3rem; font-weight: bold;"></div>
+            <div id="overallGrade" style="font-size: 2rem; padding: 5px 15px; border-radius: 8px;"></div>
+            <div style="flex: 1;">
+                <div class="progress-bar" style="height: 20px; background: var(--bg-secondary); border-radius: 10px; overflow: hidden;">
+                    <div id="scoreProgress" style="height: 100%; transition: width 0.5s;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Section Timeline -->
+    <div class="card" style="margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h2 class="card-title" style="margin-bottom: 0;">Section Timeline</h2>
+            <span id="totalDuration" style="color: var(--text-secondary);"></span>
+        </div>
+        <div id="timeline" style="display: flex; height: 60px; border-radius: 8px; overflow: hidden; margin-bottom: 10px;">
+        </div>
+        <div style="display: flex; justify-content: space-between; color: var(--text-secondary); font-size: 0.85rem;">
+            <span>0:00</span>
+            <span id="timelineEnd"></span>
+        </div>
+        <div id="timelineLegend" style="display: flex; gap: 15px; margin-top: 15px; flex-wrap: wrap;">
+        </div>
+    </div>
+
+    <!-- Component Scores and Section Details -->
+    <div class="two-col">
+        <div class="card">
+            <h2 class="card-title">Component Scores</h2>
+            <div style="position: relative; height: 300px;">
+                <canvas id="radarChart"></canvas>
+            </div>
+            <div id="componentList" style="margin-top: 20px;">
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 class="card-title">Section Details</h2>
+            <div id="sectionDetails" style="max-height: 400px; overflow-y: auto;">
+            </div>
+        </div>
+    </div>
+
+    <!-- Issues -->
+    <div class="card" style="margin-top: 20px;">
+        <h2 class="card-title">Issues</h2>
+        <div id="issuesSummary" style="display: flex; gap: 15px; margin-bottom: 15px;">
+        </div>
+        <div id="issuesList">
+        </div>
+    </div>
+</div>
+
+<style>
+.section-type-intro { background: #3b82f6; }
+.section-type-buildup { background: #f97316; }
+.section-type-drop { background: #ef4444; }
+.section-type-breakdown { background: #8b5cf6; }
+.section-type-outro { background: #14b8a6; }
+.section-type-unknown { background: #6b7280; }
+
+.timeline-section {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    color: white;
+    font-size: 0.7rem;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+    cursor: pointer;
+    transition: opacity 0.2s;
+    min-width: 30px;
+}
+
+.timeline-section:hover {
+    opacity: 0.8;
+}
+
+.timeline-section .label {
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.timeline-section .bars {
+    font-size: 0.65rem;
+    opacity: 0.9;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+}
+
+.legend-color {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+}
+
+.section-card {
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 10px;
+    border-left: 4px solid transparent;
+}
+
+.section-card.section-ok { border-left-color: var(--success); }
+.section-card.section-warn { border-left-color: var(--warning); }
+.section-card.section-error { border-left-color: var(--error); }
+
+.section-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.type-badge {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    font-weight: bold;
+    color: white;
+}
+
+.section-card-body {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.check-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-right: 10px;
+}
+
+.check-pass { color: var(--success); }
+.check-fail { color: var(--error); }
+
+.issue-card {
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 10px;
+}
+
+.issue-card.issue-critical { border-left: 4px solid var(--error); }
+.issue-card.issue-warning { border-left: 4px solid var(--warning); }
+.issue-card.issue-suggestion { border-left: 4px solid var(--accent); }
+
+.issue-severity-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    font-weight: bold;
+    margin-right: 8px;
+}
+
+.issue-severity-badge.critical { background: var(--error); color: white; }
+.issue-severity-badge.warning { background: var(--warning); color: black; }
+.issue-severity-badge.suggestion { background: var(--accent); color: white; }
+
+.component-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.component-row:last-child {
+    border-bottom: none;
+}
+
+.component-name {
+    text-transform: capitalize;
+}
+
+.component-score {
+    font-weight: bold;
+}
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+let radarChart = null;
+
+const SECTION_COLORS = {
+    'intro': '#3b82f6',
+    'buildup': '#f97316',
+    'drop': '#ef4444',
+    'breakdown': '#8b5cf6',
+    'outro': '#14b8a6',
+    'unknown': '#6b7280'
+};
+
+const GRADE_COLORS = {
+    'A': '#22c55e',
+    'B': '#06b6d4',
+    'C': '#eab308',
+    'D': '#f97316',
+    'F': '#ef4444'
+};
+
+function formatTime(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return mins + ':' + secs.toString().padStart(2, '0');
+}
+
+async function analyzeArrangement() {
+    const audioFile = document.getElementById('audioFile').value;
+    if (!audioFile) {
+        alert('Please select an audio file');
+        return;
+    }
+
+    document.getElementById('loadingIndicator').style.display = 'block';
+    document.getElementById('resultsContainer').style.display = 'none';
+    document.getElementById('analyzeBtn').disabled = true;
+
+    try {
+        const response = await fetch('/api/arrangement/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ audio_path: audioFile })
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+            alert('Error: ' + data.error);
+            return;
+        }
+
+        renderResults(data);
+    } catch (error) {
+        alert('Error analyzing file: ' + error.message);
+    } finally {
+        document.getElementById('loadingIndicator').style.display = 'none';
+        document.getElementById('analyzeBtn').disabled = false;
+    }
+}
+
+function renderResults(data) {
+    document.getElementById('resultsContainer').style.display = 'block';
+
+    // Overall score
+    const gradeColor = GRADE_COLORS[data.grade] || '#6b7280';
+    document.getElementById('overallScore').textContent = data.overall_score + '/100';
+    document.getElementById('overallScore').style.color = gradeColor;
+    document.getElementById('overallGrade').textContent = data.grade;
+    document.getElementById('overallGrade').style.background = gradeColor;
+    document.getElementById('overallGrade').style.color = data.grade === 'C' ? 'black' : 'white';
+    document.getElementById('scoreProgress').style.width = data.overall_score + '%';
+    document.getElementById('scoreProgress').style.background = gradeColor;
+
+    // Timeline
+    renderTimeline(data.section_scores, data.total_duration);
+
+    // Radar chart
+    renderRadarChart(data.component_scores);
+
+    // Component list
+    renderComponentList(data.component_scores);
+
+    // Section details
+    renderSectionDetails(data.section_scores);
+
+    // Issues
+    renderIssues(data.issues);
+}
+
+function renderTimeline(sections, totalDuration) {
+    const timeline = document.getElementById('timeline');
+    timeline.innerHTML = '';
+
+    const legend = document.getElementById('timelineLegend');
+    legend.innerHTML = '';
+    const seenTypes = new Set();
+
+    sections.forEach(section => {
+        const widthPct = (section.duration / totalDuration) * 100;
+        const sectionType = section.section_type || 'unknown';
+
+        const div = document.createElement('div');
+        div.className = 'timeline-section section-type-' + sectionType;
+        div.style.width = widthPct + '%';
+        div.innerHTML = '<span class="label">' + sectionType.substring(0, 4).toUpperCase() + '</span>' +
+                       '<span class="bars">' + section.bars + 'b</span>';
+        div.title = sectionType + ': ' + formatTime(section.start_time) + ' - ' + formatTime(section.end_time) +
+                   ' (' + section.bars + ' bars)';
+        timeline.appendChild(div);
+
+        if (!seenTypes.has(sectionType)) {
+            seenTypes.add(sectionType);
+            const legendItem = document.createElement('div');
+            legendItem.className = 'legend-item';
+            legendItem.innerHTML = '<div class="legend-color" style="background: ' + SECTION_COLORS[sectionType] + '"></div>' +
+                                  '<span>' + sectionType.charAt(0).toUpperCase() + sectionType.slice(1) + '</span>';
+            legend.appendChild(legendItem);
+        }
+    });
+
+    document.getElementById('totalDuration').textContent = formatTime(totalDuration);
+    document.getElementById('timelineEnd').textContent = formatTime(totalDuration);
+}
+
+function renderRadarChart(componentScores) {
+    const ctx = document.getElementById('radarChart').getContext('2d');
+
+    const labels = Object.keys(componentScores).map(k =>
+        k.replace('_', ' ').replace(/\\b\\w/g, l => l.toUpperCase())
+    );
+    const values = Object.values(componentScores);
+
+    if (radarChart) {
+        radarChart.destroy();
+    }
+
+    radarChart = new Chart(ctx, {
+        type: 'radar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Score',
+                data: values,
+                backgroundColor: 'rgba(6, 182, 212, 0.2)',
+                borderColor: '#06b6d4',
+                borderWidth: 2,
+                pointBackgroundColor: '#06b6d4',
+                pointRadius: 4
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                r: {
+                    min: 0,
+                    max: 100,
+                    ticks: {
+                        stepSize: 20,
+                        color: '#9ca3af'
+                    },
+                    grid: {
+                        color: '#374151'
+                    },
+                    angleLines: {
+                        color: '#374151'
+                    },
+                    pointLabels: {
+                        color: '#f3f4f6',
+                        font: { size: 11 }
+                    }
+                }
+            },
+            plugins: {
+                legend: { display: false }
+            }
+        }
+    });
+}
+
+function renderComponentList(componentScores) {
+    const container = document.getElementById('componentList');
+    container.innerHTML = '';
+
+    Object.entries(componentScores).forEach(([key, value]) => {
+        const name = key.replace('_', ' ');
+        const color = value >= 70 ? 'var(--success)' : (value >= 50 ? 'var(--warning)' : 'var(--error)');
+
+        const div = document.createElement('div');
+        div.className = 'component-row';
+        div.innerHTML = '<span class="component-name">' + name + '</span>' +
+                       '<span class="component-score" style="color: ' + color + '">' + value + '/100</span>';
+        container.appendChild(div);
+    });
+}
+
+function renderSectionDetails(sections) {
+    const container = document.getElementById('sectionDetails');
+    container.innerHTML = '';
+
+    sections.forEach((section, index) => {
+        const statusClass = section.score >= 70 ? 'section-ok' : (section.score >= 50 ? 'section-warn' : 'section-error');
+        const sectionType = section.section_type || 'unknown';
+
+        const div = document.createElement('div');
+        div.className = 'section-card ' + statusClass;
+        div.innerHTML = '<div class="section-card-header">' +
+            '<div>' +
+                '<span class="type-badge section-type-' + sectionType + '">' + sectionType + '</span>' +
+                '<span style="margin-left: 10px; color: var(--text-secondary);">' +
+                    formatTime(section.start_time) + ' - ' + formatTime(section.end_time) +
+                '</span>' +
+            '</div>' +
+            '<span style="font-weight: bold;">' + section.score + '/100</span>' +
+        '</div>' +
+        '<div class="section-card-body">' +
+            '<span>' + section.bars + ' bars</span>' +
+            (section.checks ? '<div style="margin-top: 5px;">' +
+                section.checks.map(c =>
+                    '<span class="check-item ' + (c.passed ? 'check-pass' : 'check-fail') + '">' +
+                    (c.passed ? '✓' : '✗') + ' ' + c.name + '</span>'
+                ).join('') +
+            '</div>' : '') +
+        '</div>';
+        container.appendChild(div);
+    });
+}
+
+function renderIssues(issues) {
+    const summary = document.getElementById('issuesSummary');
+    const list = document.getElementById('issuesList');
+
+    const counts = { critical: 0, warning: 0, suggestion: 0 };
+    issues.forEach(issue => {
+        const sev = issue.severity.toLowerCase();
+        if (counts[sev] !== undefined) counts[sev]++;
+    });
+
+    summary.innerHTML =
+        '<span style="color: var(--error);">' + counts.critical + ' Critical</span>' +
+        '<span style="color: var(--warning);">' + counts.warning + ' Warning</span>' +
+        '<span style="color: var(--accent);">' + counts.suggestion + ' Suggestions</span>';
+
+    list.innerHTML = '';
+
+    if (issues.length === 0) {
+        list.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 20px;">No issues found!</div>';
+        return;
+    }
+
+    // Sort by severity
+    const severityOrder = { 'critical': 0, 'warning': 1, 'suggestion': 2 };
+    issues.sort((a, b) => severityOrder[a.severity.toLowerCase()] - severityOrder[b.severity.toLowerCase()]);
+
+    issues.forEach(issue => {
+        const sev = issue.severity.toLowerCase();
+        const div = document.createElement('div');
+        div.className = 'issue-card issue-' + sev;
+        div.innerHTML =
+            '<div>' +
+                '<span class="issue-severity-badge ' + sev + '">' + issue.severity + '</span>' +
+                '<span>' + issue.message + '</span>' +
+            '</div>' +
+            (issue.fix_suggestion ? '<div style="margin-top: 8px; font-size: 0.85rem; color: var(--text-secondary);">Fix: ' + issue.fix_suggestion + '</div>' : '');
+        list.appendChild(div);
+    });
+}
+</script>
+"""
+
+
+TEMPLATES_CONTENT = """
+<h1 style="margin-bottom: 30px;">Arrangement Templates</h1>
+
+<div class="two-col">
+    <!-- Source Selection -->
+    <div class="card">
+        <h2 class="card-title">Template Source</h2>
+
+        <div style="margin-bottom: 20px;">
+            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 15px;">
+                <input type="radio" name="source" value="preset" checked onchange="toggleSource()">
+                <span>Genre Preset</span>
+            </label>
+            <select class="settings-input" id="presetSelect" style="width: 100%;" onchange="loadPreset()">
+                {% for preset in presets %}
+                <option value="{{ preset.id }}">{{ preset.name }} ({{ preset.default_bpm }} BPM)</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div style="margin-bottom: 20px;">
+            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 15px;">
+                <input type="radio" name="source" value="reference" onchange="toggleSource()">
+                <span>From Reference Track</span>
+            </label>
+            <select class="settings-input" id="referenceSelect" style="width: 100%;" disabled>
+                <option value="">-- Select audio file --</option>
+                {% for file in audio_files %}
+                <option value="{{ file.path }}">{{ file.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <button class="btn btn-primary" onclick="generateTemplate()" style="width: 100%;">
+            Generate Template
+        </button>
+    </div>
+
+    <!-- Parameters -->
+    <div class="card">
+        <h2 class="card-title">Parameters</h2>
+
+        <div style="margin-bottom: 15px;">
+            <label class="settings-label">BPM</label>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <input type="number" class="settings-input" id="bpmInput" value="138" min="60" max="200" style="width: 100px;">
+                <input type="range" id="bpmSlider" min="60" max="200" value="138" style="flex: 1;" oninput="document.getElementById('bpmInput').value = this.value; updateTimings();">
+            </div>
+        </div>
+
+        <div style="margin-bottom: 15px;">
+            <label class="settings-label">Ableton Connection</label>
+            <div id="abletonStatus" style="display: flex; align-items: center; gap: 10px;">
+                <span class="status-dot" style="background: var(--text-secondary);"></span>
+                <span>Not connected</span>
+            </div>
+        </div>
+
+        <button class="btn" onclick="checkAbletonConnection()" style="width: 100%;">
+            Check Connection
+        </button>
+    </div>
+</div>
+
+<!-- Section Presets Palette -->
+<div class="card" style="margin-top: 20px;">
+    <h2 class="card-title">Section Presets <span style="font-size: 0.8rem; color: var(--text-secondary); font-weight: normal;">(drag to add)</span></h2>
+
+    <div id="presetPalette" style="display: flex; flex-wrap: wrap; gap: 10px;">
+        <!-- Intro variants -->
+        <div class="preset-card" draggable="true" data-type="intro" data-bars="16" style="background: linear-gradient(135deg, #3b82f6, #2563eb);">
+            <div class="preset-label">INTRO</div>
+            <div class="preset-bars">16 bars</div>
+        </div>
+        <div class="preset-card" draggable="true" data-type="intro" data-bars="32" style="background: linear-gradient(135deg, #3b82f6, #2563eb);">
+            <div class="preset-label">INTRO</div>
+            <div class="preset-bars">32 bars</div>
+        </div>
+        <div class="preset-card" draggable="true" data-type="intro" data-bars="64" style="background: linear-gradient(135deg, #3b82f6, #2563eb);">
+            <div class="preset-label">INTRO</div>
+            <div class="preset-bars">64 bars</div>
+        </div>
+
+        <!-- Buildup variants -->
+        <div class="preset-card" draggable="true" data-type="buildup" data-bars="8" style="background: linear-gradient(135deg, #f97316, #ea580c);">
+            <div class="preset-label">BUILDUP</div>
+            <div class="preset-bars">8 bars</div>
+        </div>
+        <div class="preset-card" draggable="true" data-type="buildup" data-bars="16" style="background: linear-gradient(135deg, #f97316, #ea580c);">
+            <div class="preset-label">BUILDUP</div>
+            <div class="preset-bars">16 bars</div>
+        </div>
+        <div class="preset-card" draggable="true" data-type="buildup" data-bars="32" style="background: linear-gradient(135deg, #f97316, #ea580c);">
+            <div class="preset-label">BUILDUP</div>
+            <div class="preset-bars">32 bars</div>
+        </div>
+
+        <!-- Drop variants -->
+        <div class="preset-card" draggable="true" data-type="drop" data-bars="16" style="background: linear-gradient(135deg, #ef4444, #dc2626);">
+            <div class="preset-label">DROP</div>
+            <div class="preset-bars">16 bars</div>
+        </div>
+        <div class="preset-card" draggable="true" data-type="drop" data-bars="32" style="background: linear-gradient(135deg, #ef4444, #dc2626);">
+            <div class="preset-label">DROP</div>
+            <div class="preset-bars">32 bars</div>
+        </div>
+        <div class="preset-card" draggable="true" data-type="drop" data-bars="64" style="background: linear-gradient(135deg, #ef4444, #dc2626);">
+            <div class="preset-label">DROP</div>
+            <div class="preset-bars">64 bars</div>
+        </div>
+
+        <!-- Breakdown variants -->
+        <div class="preset-card" draggable="true" data-type="breakdown" data-bars="16" style="background: linear-gradient(135deg, #8b5cf6, #7c3aed);">
+            <div class="preset-label">BREAK</div>
+            <div class="preset-bars">16 bars</div>
+        </div>
+        <div class="preset-card" draggable="true" data-type="breakdown" data-bars="32" style="background: linear-gradient(135deg, #8b5cf6, #7c3aed);">
+            <div class="preset-label">BREAK</div>
+            <div class="preset-bars">32 bars</div>
+        </div>
+        <div class="preset-card" draggable="true" data-type="breakdown" data-bars="64" style="background: linear-gradient(135deg, #8b5cf6, #7c3aed);">
+            <div class="preset-label">BREAK</div>
+            <div class="preset-bars">64 bars</div>
+        </div>
+
+        <!-- Outro variants -->
+        <div class="preset-card" draggable="true" data-type="outro" data-bars="16" style="background: linear-gradient(135deg, #14b8a6, #0d9488);">
+            <div class="preset-label">OUTRO</div>
+            <div class="preset-bars">16 bars</div>
+        </div>
+        <div class="preset-card" draggable="true" data-type="outro" data-bars="32" style="background: linear-gradient(135deg, #14b8a6, #0d9488);">
+            <div class="preset-label">OUTRO</div>
+            <div class="preset-bars">32 bars</div>
+        </div>
+        <div class="preset-card" draggable="true" data-type="outro" data-bars="64" style="background: linear-gradient(135deg, #14b8a6, #0d9488);">
+            <div class="preset-label">OUTRO</div>
+            <div class="preset-bars">64 bars</div>
+        </div>
+    </div>
+</div>
+
+<!-- Template Preview -->
+<div class="card" style="margin-top: 20px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+        <h2 class="card-title" style="margin-bottom: 0;">Template Preview</h2>
+        <span id="totalDuration" style="color: var(--text-secondary);">Total: --:--</span>
+    </div>
+
+    <div id="templateTimeline" style="display: flex; height: 60px; border-radius: 8px; overflow: hidden; margin-bottom: 10px; background: var(--bg-secondary);">
+        <div style="display: flex; align-items: center; justify-content: center; width: 100%; color: var(--text-secondary);">
+            Select a source and click "Generate Template"
+        </div>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; color: var(--text-secondary); font-size: 0.85rem;">
+        <span>0:00</span>
+        <span id="timelineEnd">--:--</span>
+    </div>
+</div>
+
+<!-- Section Editor -->
+<div class="card" style="margin-top: 20px;" id="sectionEditorCard" style="display: none;">
+    <h2 class="card-title">Section Editor</h2>
+
+    <div id="sectionList" style="margin-bottom: 15px;">
+        <!-- Sections will be rendered here -->
+    </div>
+
+    <button class="btn" onclick="addSection()" style="width: 100%;">
+        + Add Section
+    </button>
+</div>
+
+<!-- Actions -->
+<div style="display: flex; gap: 15px; margin-top: 20px; flex-wrap: wrap;">
+    <button class="btn btn-primary" onclick="sendToAbleton()" id="sendBtn" disabled>
+        Send to Ableton
+    </button>
+    <button class="btn" onclick="saveToLibrary()" id="saveLibraryBtn" disabled style="background: #8b5cf6;">
+        Save to Library
+    </button>
+    <button class="btn" onclick="exportJSON()" id="exportBtn" disabled>
+        Export JSON
+    </button>
+    <button class="btn" onclick="copyLocators()" id="copyBtn" disabled>
+        Copy Locator Times
+    </button>
+</div>
+
+<!-- Save to Library Modal -->
+<div id="saveLibraryModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 1000; justify-content: center; align-items: center;">
+    <div class="card" style="max-width: 500px; width: 90%;">
+        <h2 class="card-title">Save to Reference Library</h2>
+
+        <div style="margin-bottom: 15px;">
+            <label class="settings-label">Name</label>
+            <input type="text" id="libraryName" class="settings-input" style="width: 100%;" placeholder="Reference name">
+        </div>
+
+        <div style="margin-bottom: 15px;">
+            <label class="settings-label">Tags (comma-separated)</label>
+            <input type="text" id="libraryTags" class="settings-input" style="width: 100%;" placeholder="trance, uplifting, classic">
+        </div>
+
+        <div style="margin-bottom: 20px;">
+            <label class="settings-label">Notes (optional)</label>
+            <textarea id="libraryNotes" class="settings-input" style="width: 100%; height: 60px;" placeholder="Any notes about this reference..."></textarea>
+        </div>
+
+        <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button class="btn" onclick="closeLibraryModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="confirmSaveToLibrary()">Save</button>
+        </div>
+    </div>
+</div>
+
+<!-- Marker Sync Panel -->
+<div class="card" style="margin-top: 20px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+        <h2 class="card-title" style="margin-bottom: 0;">Ableton Marker Sync</h2>
+        <button class="btn-small" onclick="refreshSyncStatus()">Refresh</button>
+    </div>
+
+    <div id="syncStatus" style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px; padding: 10px; background: var(--bg-secondary); border-radius: 8px;">
+        <span class="status-dot" id="syncStatusDot" style="background: var(--text-secondary);"></span>
+        <span id="syncStatusText">Checking connection...</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: 15px; margin-bottom: 20px;">
+        <!-- Ableton Markers Column -->
+        <div>
+            <h3 style="font-size: 0.9rem; margin-bottom: 10px; color: var(--text-secondary);">ABLETON MARKERS</h3>
+            <div id="abletonMarkerList" style="min-height: 100px; background: var(--bg-secondary); border-radius: 8px; padding: 10px;">
+                <div style="color: var(--text-secondary); font-size: 0.85rem; text-align: center;">
+                    Click Refresh to load
+                </div>
+            </div>
+        </div>
+
+        <!-- Sync Arrows -->
+        <div style="display: flex; flex-direction: column; justify-content: center; gap: 10px; padding-top: 30px;">
+            <button class="btn sync-btn" onclick="pullFromAbleton()" id="pullBtn" disabled title="Pull markers from Ableton">
+                ◀ Pull
+            </button>
+            <button class="btn sync-btn" onclick="pushToAbleton()" id="pushBtn" disabled title="Push markers to Ableton">
+                Push ▶
+            </button>
+        </div>
+
+        <!-- Dashboard Markers Column -->
+        <div>
+            <h3 style="font-size: 0.9rem; margin-bottom: 10px; color: var(--text-secondary);">DASHBOARD SECTIONS</h3>
+            <div id="dashboardMarkerList" style="min-height: 100px; background: var(--bg-secondary); border-radius: 8px; padding: 10px;">
+                <div style="color: var(--text-secondary); font-size: 0.85rem; text-align: center;">
+                    Generate a template first
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="syncFeedback" style="display: none; padding: 10px; border-radius: 8px; margin-top: 10px;"></div>
+</div>
+
+<!-- Manual Instructions (shown if Ableton can't receive locators) -->
+<div id="manualInstructions" class="card" style="margin-top: 20px; display: none;">
+    <h2 class="card-title" style="color: var(--warning);">Manual Locator Setup</h2>
+    <p style="margin-bottom: 15px; color: var(--text-secondary);">
+        Locators couldn't be added automatically. Add them manually in Ableton:
+    </p>
+    <div id="locatorList" style="font-family: monospace; background: var(--bg-secondary); padding: 15px; border-radius: 8px;">
+    </div>
+</div>
+
+<style>
+.section-row {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    padding: 12px;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    margin-bottom: 8px;
+}
+
+.section-row:hover {
+    background: var(--bg-primary);
+}
+
+.section-drag {
+    cursor: grab;
+    color: var(--text-secondary);
+    font-size: 1.2rem;
+}
+
+.section-type {
+    min-width: 100px;
+    padding: 4px 12px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    font-weight: bold;
+    font-size: 0.8rem;
+    color: white;
+    text-align: center;
+}
+
+.section-bars {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.section-bars input {
+    width: 60px;
+    text-align: center;
+}
+
+.section-time {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    min-width: 120px;
+}
+
+.section-delete {
+    color: var(--error);
+    cursor: pointer;
+    font-size: 1.2rem;
+    opacity: 0.6;
+}
+
+.section-delete:hover {
+    opacity: 1;
+}
+
+.btn-small {
+    padding: 4px 8px;
+    font-size: 0.8rem;
+    border-radius: 4px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.btn-small:hover {
+    background: var(--border-color);
+}
+
+.timeline-section {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    color: white;
+    font-size: 0.7rem;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+    min-width: 40px;
+}
+
+.timeline-section .label {
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.timeline-section .bars {
+    font-size: 0.65rem;
+    opacity: 0.9;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+}
+
+/* Preset Cards */
+.preset-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 80px;
+    height: 60px;
+    border-radius: 8px;
+    cursor: grab;
+    color: white;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+    transition: transform 0.15s, box-shadow 0.15s;
+    user-select: none;
+}
+
+.preset-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.preset-card:active {
+    cursor: grabbing;
+}
+
+.preset-card.dragging {
+    opacity: 0.5;
+    transform: scale(0.95);
+}
+
+.preset-label {
+    font-weight: bold;
+    font-size: 0.75rem;
+}
+
+.preset-bars {
+    font-size: 0.65rem;
+    opacity: 0.9;
+}
+
+/* Drop zones for timeline */
+.drop-zone {
+    position: absolute;
+    width: 4px;
+    height: 100%;
+    background: transparent;
+    transition: all 0.2s;
+    z-index: 10;
+}
+
+.drop-zone.active {
+    background: var(--accent);
+    width: 6px;
+    box-shadow: 0 0 10px var(--accent);
+}
+
+.drop-zone-indicator {
+    position: absolute;
+    top: -8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid var(--accent);
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.drop-zone.active .drop-zone-indicator {
+    opacity: 1;
+}
+
+/* Timeline drop highlight */
+#templateTimeline.drag-over {
+    outline: 2px dashed var(--accent);
+    outline-offset: 2px;
+}
+
+/* Section list drop zones */
+.section-row.drop-target-above {
+    border-top: 3px solid var(--accent);
+    margin-top: -3px;
+}
+
+.section-row.drop-target-below {
+    border-bottom: 3px solid var(--accent);
+    margin-bottom: -3px;
+}
+
+/* Sync Panel Styles */
+.sync-btn {
+    padding: 8px 12px;
+    font-size: 0.85rem;
+    min-width: 70px;
+}
+
+.sync-marker {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+    margin-bottom: 6px;
+    font-size: 0.85rem;
+}
+
+.sync-marker .marker-name {
+    flex: 1;
+    font-weight: 500;
+}
+
+.sync-marker .marker-time {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.sync-marker .marker-color {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.sync-marker.match {
+    border-left: 3px solid var(--success);
+}
+
+.sync-marker.different {
+    border-left: 3px solid var(--warning);
+}
+
+.sync-marker.missing {
+    border-left: 3px solid var(--error);
+    opacity: 0.7;
+}
+</style>
+
+<script>
+const SECTION_COLORS = {
+    'intro': '#3b82f6',
+    'buildup': '#f97316',
+    'drop': '#ef4444',
+    'breakdown': '#8b5cf6',
+    'outro': '#14b8a6',
+    'unknown': '#6b7280'
+};
+
+let currentTemplate = null;
+let abletonConnected = false;
+
+function toggleSource() {
+    const isPreset = document.querySelector('input[name="source"][value="preset"]').checked;
+    document.getElementById('presetSelect').disabled = !isPreset;
+    document.getElementById('referenceSelect').disabled = isPreset;
+}
+
+function formatTime(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return mins + ':' + secs.toString().padStart(2, '0');
+}
+
+async function generateTemplate() {
+    const isPreset = document.querySelector('input[name="source"][value="preset"]').checked;
+    const bpm = parseFloat(document.getElementById('bpmInput').value) || 138;
+
+    let body;
+    if (isPreset) {
+        const preset = document.getElementById('presetSelect').value;
+        body = JSON.stringify({ source: 'preset', preset: preset, bpm: bpm });
+    } else {
+        const reference = document.getElementById('referenceSelect').value;
+        if (!reference) {
+            alert('Please select a reference audio file');
+            return;
+        }
+        body = JSON.stringify({ source: 'reference', audio_path: reference, bpm: bpm });
+    }
+
+    try {
+        const response = await fetch('/api/templates/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body
+        });
+
+        const data = await response.json();
+        if (data.error) {
+            alert('Error: ' + data.error);
+            return;
+        }
+
+        currentTemplate = data;
+        renderTemplate();
+
+        // Enable action buttons
+        document.getElementById('sendBtn').disabled = false;
+        document.getElementById('saveLibraryBtn').disabled = false;
+        document.getElementById('exportBtn').disabled = false;
+        document.getElementById('copyBtn').disabled = false;
+
+    } catch (error) {
+        alert('Error generating template: ' + error.message);
+    }
+}
+
+function loadPreset() {
+    // Auto-generate when preset changes
+    generateTemplate();
+}
+
+function renderTemplate() {
+    if (!currentTemplate) return;
+
+    // Update timeline
+    const timeline = document.getElementById('templateTimeline');
+    timeline.innerHTML = '';
+
+    const totalDuration = currentTemplate.total_duration;
+
+    currentTemplate.sections.forEach((section, index) => {
+        const widthPct = (section.duration / totalDuration) * 100;
+        const color = SECTION_COLORS[section.section_type] || SECTION_COLORS['unknown'];
+
+        const div = document.createElement('div');
+        div.className = 'timeline-section';
+        div.style.width = widthPct + '%';
+        div.style.background = color;
+        div.innerHTML = '<span class="label">' + section.section_type.substring(0, 4).toUpperCase() + '</span>' +
+                       '<span class="bars">' + section.bars + 'b</span>';
+        div.title = section.section_type + ': ' + section.time_range;
+        timeline.appendChild(div);
+    });
+
+    // Update totals
+    document.getElementById('totalDuration').textContent = 'Total: ' + currentTemplate.total_duration_formatted;
+    document.getElementById('timelineEnd').textContent = currentTemplate.total_duration_formatted;
+
+    // Render section editor
+    renderSectionEditor();
+}
+
+function renderSectionEditor() {
+    const list = document.getElementById('sectionList');
+    list.innerHTML = '';
+
+    currentTemplate.sections.forEach((section, index) => {
+        const color = SECTION_COLORS[section.section_type] || SECTION_COLORS['unknown'];
+
+        const row = document.createElement('div');
+        row.className = 'section-row';
+        row.dataset.index = index;
+        row.innerHTML = `
+            <span class="section-drag">≡</span>
+            <span class="section-type" style="background: ${color}">${section.section_type}</span>
+            <div class="section-bars">
+                <button class="btn-small" onclick="adjustSection(${index}, -8)">-8</button>
+                <input type="number" value="${section.bars}" min="8" step="8" onchange="setSectionBars(${index}, this.value)">
+                <button class="btn-small" onclick="adjustSection(${index}, 8)">+8</button>
+                <span>bars</span>
+            </div>
+            <span class="section-time">${section.time_range}</span>
+            <span class="section-delete" onclick="removeSection(${index})">×</span>
+        `;
+        list.appendChild(row);
+    });
+}
+
+async function adjustSection(index, delta) {
+    const sections = currentTemplate.sections.map(s => ({
+        section_type: s.section_type,
+        bars: s.bars
+    }));
+
+    sections[index].bars = Math.max(8, sections[index].bars + delta);
+
+    await updateTemplate(sections);
+}
+
+async function setSectionBars(index, bars) {
+    const sections = currentTemplate.sections.map(s => ({
+        section_type: s.section_type,
+        bars: s.bars
+    }));
+
+    sections[index].bars = Math.max(8, Math.round(parseInt(bars) / 8) * 8);
+
+    await updateTemplate(sections);
+}
+
+async function removeSection(index) {
+    const sections = currentTemplate.sections.map(s => ({
+        section_type: s.section_type,
+        bars: s.bars
+    }));
+
+    sections.splice(index, 1);
+
+    await updateTemplate(sections);
+}
+
+async function addSection() {
+    const sections = currentTemplate.sections.map(s => ({
+        section_type: s.section_type,
+        bars: s.bars
+    }));
+
+    // Add a new section (default: 32-bar breakdown)
+    sections.push({ section_type: 'breakdown', bars: 32 });
+
+    await updateTemplate(sections);
+}
+
+async function updateTemplate(sections) {
+    const bpm = parseFloat(document.getElementById('bpmInput').value) || 138;
+
+    try {
+        const response = await fetch('/api/templates/customize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                template: currentTemplate,
+                bpm: bpm,
+                sections: sections
+            })
+        });
+
+        const data = await response.json();
+        if (data.error) {
+            alert('Error: ' + data.error);
+            return;
+        }
+
+        currentTemplate = data;
+        renderTemplate();
+
+    } catch (error) {
+        alert('Error updating template: ' + error.message);
+    }
+}
+
+function updateTimings() {
+    if (currentTemplate) {
+        const bpm = parseFloat(document.getElementById('bpmInput').value) || 138;
+        currentTemplate.bpm = bpm;
+        // Re-fetch to recalculate timings
+        updateTemplate(currentTemplate.sections.map(s => ({
+            section_type: s.section_type,
+            bars: s.bars
+        })));
+    }
+}
+
+async function checkAbletonConnection() {
+    try {
+        const response = await fetch('/api/templates/ableton-status');
+        const data = await response.json();
+
+        const statusDiv = document.getElementById('abletonStatus');
+        if (data.connected) {
+            abletonConnected = true;
+            statusDiv.innerHTML = '<span class="status-dot" style="background: var(--success);"></span>' +
+                                 '<span>Connected - ' + data.tempo + ' BPM</span>';
+        } else {
+            abletonConnected = false;
+            statusDiv.innerHTML = '<span class="status-dot" style="background: var(--error);"></span>' +
+                                 '<span>' + (data.error || 'Not connected') + '</span>';
+        }
+    } catch (error) {
+        document.getElementById('abletonStatus').innerHTML =
+            '<span class="status-dot" style="background: var(--error);"></span>' +
+            '<span>Error checking connection</span>';
+    }
+}
+
+async function sendToAbleton() {
+    if (!currentTemplate) return;
+
+    try {
+        const response = await fetch('/api/templates/send-to-ableton', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ template: currentTemplate })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            alert('Template sent to Ableton!\n' + data.message);
+        } else {
+            // Show manual instructions
+            if (data.manual_locators && data.manual_locators.length > 0) {
+                showManualInstructions(data.manual_locators);
+            }
+            alert(data.message || 'Failed to send to Ableton');
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+function showManualInstructions(locators) {
+    const div = document.getElementById('manualInstructions');
+    const list = document.getElementById('locatorList');
+
+    div.style.display = 'block';
+
+    list.innerHTML = locators.map(loc =>
+        `${loc.name.padEnd(12)} @ ${formatTime(loc.time_seconds)} (bar ${Math.floor(loc.time_beats / 4)})`
+    ).join('\\n');
+}
+
+function exportJSON() {
+    if (!currentTemplate) return;
+
+    const blob = new Blob([JSON.stringify(currentTemplate, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = currentTemplate.name.replace(/[^a-z0-9]/gi, '_') + '_template.json';
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function copyLocators() {
+    if (!currentTemplate) return;
+
+    const text = currentTemplate.locators.map(loc =>
+        `${loc.name}: ${formatTime(loc.time_seconds)} (bar ${Math.floor(loc.time_beats / 4)})`
+    ).join('\\n');
+
+    navigator.clipboard.writeText(text).then(() => {
+        alert('Locator times copied to clipboard!');
+    });
+}
+
+// ========================================
+// Drag and Drop for Section Presets
+// ========================================
+
+let draggedPreset = null;
+
+function initDragAndDrop() {
+    // Setup drag events on preset cards
+    document.querySelectorAll('.preset-card').forEach(card => {
+        card.addEventListener('dragstart', handleDragStart);
+        card.addEventListener('dragend', handleDragEnd);
+    });
+
+    // Setup drop zones on timeline
+    const timeline = document.getElementById('templateTimeline');
+    timeline.addEventListener('dragover', handleTimelineDragOver);
+    timeline.addEventListener('dragleave', handleTimelineDragLeave);
+    timeline.addEventListener('drop', handleTimelineDrop);
+
+    // Setup drop zones on section list
+    const sectionList = document.getElementById('sectionList');
+    sectionList.addEventListener('dragover', handleSectionListDragOver);
+    sectionList.addEventListener('dragleave', handleSectionListDragLeave);
+    sectionList.addEventListener('drop', handleSectionListDrop);
+}
+
+function handleDragStart(e) {
+    draggedPreset = {
+        type: e.target.dataset.type,
+        bars: parseInt(e.target.dataset.bars)
+    };
+    e.target.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData('text/plain', JSON.stringify(draggedPreset));
+}
+
+function handleDragEnd(e) {
+    e.target.classList.remove('dragging');
+    draggedPreset = null;
+    clearAllDropIndicators();
+}
+
+function handleTimelineDragOver(e) {
+    if (!draggedPreset) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    e.currentTarget.classList.add('drag-over');
+}
+
+function handleTimelineDragLeave(e) {
+    e.currentTarget.classList.remove('drag-over');
+}
+
+function handleTimelineDrop(e) {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drag-over');
+
+    if (!draggedPreset || !currentTemplate) return;
+
+    // Calculate drop position based on mouse X within timeline
+    const timeline = e.currentTarget;
+    const rect = timeline.getBoundingClientRect();
+    const dropX = e.clientX - rect.left;
+    const dropPercent = dropX / rect.width;
+
+    // Find insert index based on drop position
+    let insertIndex = 0;
+    let accumulatedPercent = 0;
+
+    for (let i = 0; i < currentTemplate.sections.length; i++) {
+        const sectionPercent = currentTemplate.sections[i].duration / currentTemplate.total_duration;
+        if (dropPercent < accumulatedPercent + sectionPercent / 2) {
+            insertIndex = i;
+            break;
+        }
+        accumulatedPercent += sectionPercent;
+        insertIndex = i + 1;
+    }
+
+    insertSection(draggedPreset.type, draggedPreset.bars, insertIndex);
+}
+
+function handleSectionListDragOver(e) {
+    if (!draggedPreset) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+
+    // Find the section row we're hovering over
+    const sectionRow = e.target.closest('.section-row');
+    if (sectionRow) {
+        clearAllDropIndicators();
+        const rect = sectionRow.getBoundingClientRect();
+        const midY = rect.top + rect.height / 2;
+
+        if (e.clientY < midY) {
+            sectionRow.classList.add('drop-target-above');
+        } else {
+            sectionRow.classList.add('drop-target-below');
+        }
+    }
+}
+
+function handleSectionListDragLeave(e) {
+    // Only clear if leaving the section list entirely
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+        clearAllDropIndicators();
+    }
+}
+
+function handleSectionListDrop(e) {
+    e.preventDefault();
+
+    if (!draggedPreset || !currentTemplate) return;
+
+    // Find insert index based on drop target
+    const sectionRow = e.target.closest('.section-row');
+    let insertIndex = currentTemplate.sections.length; // Default to end
+
+    if (sectionRow) {
+        const sectionIndex = parseInt(sectionRow.dataset.index);
+        const rect = sectionRow.getBoundingClientRect();
+        const midY = rect.top + rect.height / 2;
+
+        if (e.clientY < midY) {
+            insertIndex = sectionIndex;
+        } else {
+            insertIndex = sectionIndex + 1;
+        }
+    }
+
+    clearAllDropIndicators();
+    insertSection(draggedPreset.type, draggedPreset.bars, insertIndex);
+}
+
+function clearAllDropIndicators() {
+    document.querySelectorAll('.drop-target-above, .drop-target-below').forEach(el => {
+        el.classList.remove('drop-target-above', 'drop-target-below');
+    });
+    document.getElementById('templateTimeline').classList.remove('drag-over');
+}
+
+function insertSection(type, bars, index) {
+    if (!currentTemplate) return;
+
+    // Create new section
+    const newSection = {
+        section_type: type,
+        bars: bars
+    };
+
+    // Build new sections array with insertion
+    const sections = currentTemplate.sections.map(s => ({
+        section_type: s.section_type,
+        bars: s.bars
+    }));
+
+    sections.splice(index, 0, newSection);
+
+    // Call customize API to update
+    updateTemplate(sections);
+}
+
+// ========================================
+// Save to Library Functions
+// ========================================
+
+function saveToLibrary() {
+    if (!currentTemplate) return;
+
+    // Pre-fill the name from the template
+    document.getElementById('libraryName').value = currentTemplate.name || '';
+    document.getElementById('libraryTags').value = '';
+    document.getElementById('libraryNotes').value = '';
+
+    // Show modal
+    document.getElementById('saveLibraryModal').style.display = 'flex';
+}
+
+function closeLibraryModal() {
+    document.getElementById('saveLibraryModal').style.display = 'none';
+}
+
+async function confirmSaveToLibrary() {
+    if (!currentTemplate) return;
+
+    const name = document.getElementById('libraryName').value.trim() || currentTemplate.name;
+    const tagsStr = document.getElementById('libraryTags').value.trim();
+    const tags = tagsStr ? tagsStr.split(',').map(t => t.trim()).filter(t => t) : [];
+    const notes = document.getElementById('libraryNotes').value.trim();
+
+    try {
+        const response = await fetch('/api/library/references', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                template: currentTemplate,
+                name: name,
+                tags: tags,
+                notes: notes
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+            alert('Error saving to library: ' + data.error);
+            return;
+        }
+
+        closeLibraryModal();
+        alert('Saved to library: ' + name);
+
+    } catch (err) {
+        alert('Error saving to library: ' + err.message);
+    }
+}
+
+// Close modal on escape key
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        closeLibraryModal();
+    }
+});
+
+// Close modal on background click
+document.getElementById('saveLibraryModal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'saveLibraryModal') {
+        closeLibraryModal();
+    }
+});
+
+// Initialize
+document.getElementById('bpmInput').addEventListener('change', updateTimings);
+
+// ========================================
+// Marker Sync Functions
+// ========================================
+
+async function refreshSyncStatus() {
+    const statusDot = document.getElementById('syncStatusDot');
+    const statusText = document.getElementById('syncStatusText');
+    const pullBtn = document.getElementById('pullBtn');
+    const pushBtn = document.getElementById('pushBtn');
+
+    statusText.textContent = 'Checking connection...';
+    statusDot.style.background = 'var(--text-secondary)';
+
+    try {
+        const response = await fetch('/api/sync/status');
+        const status = await response.json();
+
+        if (status.connected) {
+            statusDot.style.background = 'var(--success)';
+            statusText.textContent = `Connected (${status.tempo} BPM) - ${status.ableton_marker_count} markers`;
+            pullBtn.disabled = false;
+            pushBtn.disabled = !currentTemplate;
+
+            // Update Ableton markers list
+            renderAbletonMarkers(status.ableton_markers || []);
+        } else {
+            statusDot.style.background = 'var(--error)';
+            statusText.textContent = status.error || 'Not connected';
+            pullBtn.disabled = true;
+            pushBtn.disabled = true;
+            renderAbletonMarkers([]);
+        }
+
+        // Update dashboard markers list
+        renderDashboardMarkers();
+
+    } catch (err) {
+        statusDot.style.background = 'var(--error)';
+        statusText.textContent = 'Error: ' + err.message;
+        pullBtn.disabled = true;
+        pushBtn.disabled = true;
+    }
+}
+
+function renderAbletonMarkers(markers) {
+    const container = document.getElementById('abletonMarkerList');
+
+    if (!markers || markers.length === 0) {
+        container.innerHTML = '<div style="color: var(--text-secondary); font-size: 0.85rem; text-align: center;">No markers found</div>';
+        return;
+    }
+
+    container.innerHTML = markers.map(m => {
+        const time = formatTime((m.time_beats / (currentTemplate?.bpm || 138)) * 60);
+        return `<div class="sync-marker">
+            <span class="marker-color" style="background: var(--accent);"></span>
+            <span class="marker-name">${m.name}</span>
+            <span class="marker-time">${time}</span>
+        </div>`;
+    }).join('');
+}
+
+function renderDashboardMarkers() {
+    const container = document.getElementById('dashboardMarkerList');
+
+    if (!currentTemplate || !currentTemplate.locators || currentTemplate.locators.length === 0) {
+        container.innerHTML = '<div style="color: var(--text-secondary); font-size: 0.85rem; text-align: center;">Generate a template first</div>';
+        return;
+    }
+
+    container.innerHTML = currentTemplate.locators.map(loc => {
+        const color = SECTION_COLORS[loc.name.toLowerCase().replace(/[^a-z]/g, '')] || 'var(--accent)';
+        return `<div class="sync-marker">
+            <span class="marker-color" style="background: ${color};"></span>
+            <span class="marker-name">${loc.name}</span>
+            <span class="marker-time">${loc.time_formatted}</span>
+        </div>`;
+    }).join('');
+}
+
+async function pullFromAbleton() {
+    showSyncFeedback('Pulling markers from Ableton...', 'info');
+
+    try {
+        const response = await fetch('/api/sync/pull');
+        const result = await response.json();
+
+        if (result.success && result.markers && result.markers.length > 0) {
+            // Convert pulled markers to template sections
+            const bpm = currentTemplate?.bpm || 138;
+
+            // Sort by time
+            const sortedMarkers = result.markers.sort((a, b) => a.time_beats - b.time_beats);
+
+            // Create sections from markers
+            const sections = [];
+            for (let i = 0; i < sortedMarkers.length; i++) {
+                const marker = sortedMarkers[i];
+                const nextMarker = sortedMarkers[i + 1];
+
+                const startBeat = marker.time_beats;
+                const endBeat = nextMarker ? nextMarker.time_beats : startBeat + 32 * 4; // Default 32 bars
+
+                const bars = Math.round((endBeat - startBeat) / 4);
+                const sectionType = detectSectionType(marker.name);
+
+                sections.push({
+                    section_type: sectionType,
+                    bars: bars,
+                    position_bars: Math.round(startBeat / 4),
+                    duration: (bars * 4 / bpm) * 60
+                });
+            }
+
+            if (sections.length > 0) {
+                // Update current template
+                currentTemplate = currentTemplate || { name: 'Imported from Ableton', bpm: bpm };
+                currentTemplate.sections = sections;
+                currentTemplate.locators = sortedMarkers.map(m => ({
+                    name: m.name,
+                    time_beats: m.time_beats,
+                    time_formatted: formatTime((m.time_beats / bpm) * 60)
+                }));
+
+                // Recalculate total duration
+                const lastSection = sections[sections.length - 1];
+                currentTemplate.total_duration = ((lastSection.position_bars + lastSection.bars) * 4 / bpm) * 60;
+
+                renderTemplate();
+                showSyncFeedback(`Pulled ${result.markers.length} markers from Ableton`, 'success');
+
+                // Enable buttons
+                document.getElementById('sendBtn').disabled = false;
+                document.getElementById('saveLibraryBtn').disabled = false;
+                document.getElementById('exportBtn').disabled = false;
+                document.getElementById('copyBtn').disabled = false;
+            }
+        } else {
+            showSyncFeedback(result.message || 'No markers found', 'warning');
+        }
+
+        refreshSyncStatus();
+
+    } catch (err) {
+        showSyncFeedback('Error pulling markers: ' + err.message, 'error');
+    }
+}
+
+function detectSectionType(name) {
+    const nameLower = name.toLowerCase();
+    if (nameLower.includes('intro')) return 'intro';
+    if (nameLower.includes('build')) return 'buildup';
+    if (nameLower.includes('drop') || nameLower.includes('main')) return 'drop';
+    if (nameLower.includes('break') || nameLower.includes('down')) return 'breakdown';
+    if (nameLower.includes('outro') || nameLower.includes('end')) return 'outro';
+    return 'unknown';
+}
+
+async function pushToAbleton() {
+    if (!currentTemplate || !currentTemplate.locators) {
+        showSyncFeedback('No template to push', 'warning');
+        return;
+    }
+
+    showSyncFeedback('Pushing markers to Ableton...', 'info');
+
+    try {
+        const markers = currentTemplate.locators.map(loc => ({
+            name: loc.name,
+            time_beats: loc.time_beats
+        }));
+
+        const response = await fetch('/api/sync/push', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ markers: markers, clear_first: true })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            showSyncFeedback(result.message || `Pushed ${result.added} markers`, 'success');
+        } else {
+            showSyncFeedback(result.message || 'Push failed', 'error');
+        }
+
+        refreshSyncStatus();
+
+    } catch (err) {
+        showSyncFeedback('Error pushing markers: ' + err.message, 'error');
+    }
+}
+
+function showSyncFeedback(message, type) {
+    const feedback = document.getElementById('syncFeedback');
+    feedback.style.display = 'block';
+    feedback.textContent = message;
+
+    const colors = {
+        'info': { bg: 'var(--bg-secondary)', color: 'var(--text-primary)' },
+        'success': { bg: 'rgba(34, 197, 94, 0.2)', color: 'var(--success)' },
+        'warning': { bg: 'rgba(245, 158, 11, 0.2)', color: 'var(--warning)' },
+        'error': { bg: 'rgba(239, 68, 68, 0.2)', color: 'var(--error)' }
+    };
+
+    const style = colors[type] || colors['info'];
+    feedback.style.background = style.bg;
+    feedback.style.color = style.color;
+
+    // Auto-hide after 5 seconds for success messages
+    if (type === 'success') {
+        setTimeout(() => {
+            feedback.style.display = 'none';
+        }, 5000);
+    }
+}
+
+// Auto-load first preset on page load
+window.addEventListener('load', () => {
+    initDragAndDrop();
+    generateTemplate();
+    // Check sync status on load
+    setTimeout(refreshSyncStatus, 500);
+});
+</script>
+"""
+
+
+# ============================================================================
+# Reference Overlay Content
+# ============================================================================
+
+COMPARE_OVERLAY_CONTENT = """
+<div class="card" style="margin-bottom: 24px;">
+    <h2 style="margin: 0 0 8px 0; font-size: 1.5rem;">Reference Overlay Comparison</h2>
+    <p style="margin: 0; color: var(--text-secondary);">Compare your track's structure against a reference to see how sections align.</p>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;">
+    <!-- User Track Source -->
+    <div class="card">
+        <h3 style="margin: 0 0 16px 0; color: var(--accent);">Your Track</h3>
+
+        <div style="margin-bottom: 16px;">
+            <label style="display: block; margin-bottom: 8px;">Source:</label>
+            <select id="userSource" onchange="updateUserSource()" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary);">
+                <option value="audio">Audio File</option>
+                <option value="preset">Genre Preset</option>
+            </select>
+        </div>
+
+        <div id="userAudioSection">
+            <label style="display: block; margin-bottom: 8px;">Select Audio File:</label>
+            <select id="userAudioFile" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary);">
+                {% for file in audio_files %}
+                <option value="{{ file.path }}">{{ file.name }}</option>
+                {% endfor %}
+                {% if not audio_files %}
+                <option value="">No audio files found</option>
+                {% endif %}
+            </select>
+        </div>
+
+        <div id="userPresetSection" style="display: none;">
+            <label style="display: block; margin-bottom: 8px;">Preset:</label>
+            <select id="userPreset" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary);">
+                {% for preset in presets %}
+                <option value="{{ preset.id }}">{{ preset.name }}</option>
+                {% endfor %}
+            </select>
+
+            <label style="display: block; margin: 16px 0 8px 0;">BPM:</label>
+            <input type="number" id="userBpm" value="138" min="60" max="200" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary);">
+        </div>
+    </div>
+
+    <!-- Reference Track Source -->
+    <div class="card">
+        <h3 style="margin: 0 0 16px 0; color: #a855f7;">Reference Track</h3>
+
+        <div style="margin-bottom: 16px;">
+            <label style="display: block; margin-bottom: 8px;">Source:</label>
+            <select id="refSource" onchange="updateRefSource()" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary);">
+                <option value="library">From Library (instant)</option>
+                <option value="audio">Audio File</option>
+                <option value="preset">Genre Preset</option>
+            </select>
+        </div>
+
+        <div id="refLibrarySection">
+            <label style="display: block; margin-bottom: 8px;">Select Reference:</label>
+            <select id="refLibrary" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary);">
+                <option value="">Loading library...</option>
+            </select>
+            <div id="refLibraryPreview" style="margin-top: 12px; padding: 12px; background: var(--bg-primary); border-radius: 8px; display: none;">
+                <div id="refLibraryInfo" style="font-size: 0.9rem; color: var(--text-secondary);"></div>
+            </div>
+        </div>
+
+        <div id="refAudioSection" style="display: none;">
+            <label style="display: block; margin-bottom: 8px;">Select Audio File:</label>
+            <select id="refAudioFile" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary);">
+                {% for file in audio_files %}
+                <option value="{{ file.path }}">{{ file.name }}</option>
+                {% endfor %}
+                {% if not audio_files %}
+                <option value="">No audio files found</option>
+                {% endif %}
+            </select>
+        </div>
+
+        <div id="refPresetSection" style="display: none;">
+            <label style="display: block; margin-bottom: 8px;">Preset:</label>
+            <select id="refPreset" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary);">
+                {% for preset in presets %}
+                <option value="{{ preset.id }}">{{ preset.name }}</option>
+                {% endfor %}
+            </select>
+
+            <label style="display: block; margin: 16px 0 8px 0;">BPM:</label>
+            <input type="number" id="refBpm" value="138" min="60" max="200" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary);">
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom: 24px; text-align: center;">
+    <button onclick="runComparison()" class="btn btn-primary" style="padding: 12px 32px; font-size: 1.1rem;">
+        Compare Structures
+    </button>
+    <span id="loadingIndicator" style="display: none; margin-left: 16px; color: var(--text-secondary);">
+        Analyzing... (this may take a moment)
+    </span>
+</div>
+
+<!-- Results Section (hidden until comparison runs) -->
+<div id="resultsSection" style="display: none;">
+    <!-- Alignment Score -->
+    <div class="card" style="margin-bottom: 24px; text-align: center;">
+        <h3 style="margin: 0 0 16px 0;">Overall Alignment Score</h3>
+        <div id="alignmentScore" style="font-size: 3rem; font-weight: bold; color: var(--accent);">--</div>
+        <div id="alignmentLabel" style="color: var(--text-secondary); font-size: 1.1rem;">--</div>
+    </div>
+
+    <!-- Timeline Comparison -->
+    <div class="card" style="margin-bottom: 24px;">
+        <h3 style="margin: 0 0 16px 0;">Structure Comparison</h3>
+
+        <div style="margin-bottom: 24px;">
+            <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                <div style="width: 120px; font-weight: bold; color: var(--accent);">Your Track:</div>
+                <div id="userTrackName" style="color: var(--text-secondary);">--</div>
+            </div>
+            <div id="userTimeline" class="timeline-container" style="background: var(--bg-primary); border-radius: 8px; height: 50px; position: relative; overflow: hidden;"></div>
+        </div>
+
+        <!-- Alignment Markers -->
+        <div id="alignmentMarkers" style="position: relative; height: 40px; margin-bottom: 24px;">
+            <!-- Connection lines drawn via JS -->
+        </div>
+
+        <div>
+            <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                <div style="width: 120px; font-weight: bold; color: #a855f7;">Reference:</div>
+                <div id="refTrackName" style="color: var(--text-secondary);">--</div>
+            </div>
+            <div id="refTimeline" class="timeline-container" style="background: var(--bg-primary); border-radius: 8px; height: 50px; position: relative; overflow: hidden;"></div>
+        </div>
+
+        <!-- Time axis -->
+        <div id="timeAxis" style="display: flex; justify-content: space-between; margin-top: 8px; color: var(--text-secondary); font-size: 0.85rem;"></div>
+    </div>
+
+    <!-- Section Alignments -->
+    <div class="card" style="margin-bottom: 24px;">
+        <h3 style="margin: 0 0 16px 0;">Section Alignment Details</h3>
+        <div id="alignmentDetails" style="max-height: 400px; overflow-y: auto;"></div>
+    </div>
+
+    <!-- Insights -->
+    <div class="card" style="margin-bottom: 24px;">
+        <h3 style="margin: 0 0 16px 0;">Insights & Recommendations</h3>
+        <div id="insightsList"></div>
+    </div>
+
+    <!-- Legend -->
+    <div class="card">
+        <h4 style="margin: 0 0 12px 0;">Legend</h4>
+        <div style="display: flex; flex-wrap: wrap; gap: 16px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="display: inline-block; width: 16px; height: 16px; background: #3b82f6; border-radius: 2px;"></span>
+                <span>Intro</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="display: inline-block; width: 16px; height: 16px; background: #f97316; border-radius: 2px;"></span>
+                <span>Buildup</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="display: inline-block; width: 16px; height: 16px; background: #ef4444; border-radius: 2px;"></span>
+                <span>Drop</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="display: inline-block; width: 16px; height: 16px; background: #8b5cf6; border-radius: 2px;"></span>
+                <span>Breakdown</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="display: inline-block; width: 16px; height: 16px; background: #14b8a6; border-radius: 2px;"></span>
+                <span>Outro</span>
+            </div>
+        </div>
+        <div style="display: flex; flex-wrap: wrap; gap: 16px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="display: inline-block; width: 16px; height: 16px; background: #22c55e; border-radius: 50%;"></span>
+                <span>Aligned</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="display: inline-block; width: 16px; height: 16px; background: #eab308; border-radius: 50%;"></span>
+                <span>Early/Late</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="display: inline-block; width: 16px; height: 16px; background: #ef4444; border-radius: 50%;"></span>
+                <span>Missing</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.timeline-section {
+    position: absolute;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: bold;
+    color: white;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+    box-sizing: border-box;
+    border-right: 1px solid rgba(255,255,255,0.3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0 4px;
+}
+
+.alignment-row {
+    display: flex;
+    align-items: center;
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    background: var(--bg-primary);
+}
+
+.alignment-row.aligned {
+    border-left: 4px solid #22c55e;
+}
+
+.alignment-row.early, .alignment-row.late {
+    border-left: 4px solid #eab308;
+}
+
+.alignment-row.missing_user, .alignment-row.missing_ref {
+    border-left: 4px solid #ef4444;
+}
+
+.insight-item {
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    background: var(--bg-primary);
+    border-left: 4px solid var(--accent);
+}
+
+.insight-item.warning {
+    border-left-color: #eab308;
+}
+
+.insight-item.error {
+    border-left-color: #ef4444;
+}
+
+.insight-item.success {
+    border-left-color: #22c55e;
+}
+</style>
+
+<script>
+const SECTION_COLORS = {
+    'intro': '#3b82f6',
+    'buildup': '#f97316',
+    'drop': '#ef4444',
+    'breakdown': '#8b5cf6',
+    'outro': '#14b8a6'
+};
+
+let comparisonResult = null;
+
+function updateUserSource() {
+    const source = document.getElementById('userSource').value;
+    document.getElementById('userAudioSection').style.display = source === 'audio' ? 'block' : 'none';
+    document.getElementById('userPresetSection').style.display = source === 'preset' ? 'block' : 'none';
+}
+
+function updateRefSource() {
+    const source = document.getElementById('refSource').value;
+    document.getElementById('refLibrarySection').style.display = source === 'library' ? 'block' : 'none';
+    document.getElementById('refAudioSection').style.display = source === 'audio' ? 'block' : 'none';
+    document.getElementById('refPresetSection').style.display = source === 'preset' ? 'block' : 'none';
+}
+
+let libraryReferences = [];
+
+async function loadLibraryReferences() {
+    try {
+        const response = await fetch('/api/library/references');
+        const data = await response.json();
+
+        libraryReferences = data.references || [];
+
+        const select = document.getElementById('refLibrary');
+        select.innerHTML = '';
+
+        if (libraryReferences.length === 0) {
+            select.innerHTML = '<option value="">No references saved yet</option>';
+        } else {
+            libraryReferences.forEach(ref => {
+                const option = document.createElement('option');
+                option.value = ref.id;
+                option.textContent = `${ref.name} (${ref.bpm} BPM, ${ref.total_duration_formatted})`;
+                select.appendChild(option);
+            });
+
+            // Show preview for first item
+            updateLibraryPreview();
+        }
+    } catch (err) {
+        console.error('Failed to load library:', err);
+        document.getElementById('refLibrary').innerHTML = '<option value="">Error loading library</option>';
+    }
+}
+
+function updateLibraryPreview() {
+    const refId = document.getElementById('refLibrary').value;
+    const previewDiv = document.getElementById('refLibraryPreview');
+    const infoDiv = document.getElementById('refLibraryInfo');
+
+    const ref = libraryReferences.find(r => r.id === refId);
+    if (ref) {
+        previewDiv.style.display = 'block';
+        infoDiv.innerHTML = `
+            <div><strong>${ref.section_count} sections:</strong> ${ref.section_summary}</div>
+            ${ref.tags && ref.tags.length > 0 ? `<div style="margin-top: 4px;">Tags: ${ref.tags.join(', ')}</div>` : ''}
+            ${ref.notes ? `<div style="margin-top: 4px; font-style: italic;">${ref.notes}</div>` : ''}
+        `;
+    } else {
+        previewDiv.style.display = 'none';
+    }
+}
+
+// Add event listener for library selection
+document.addEventListener('DOMContentLoaded', () => {
+    loadLibraryReferences();
+    const refLibrarySelect = document.getElementById('refLibrary');
+    if (refLibrarySelect) {
+        refLibrarySelect.addEventListener('change', updateLibraryPreview);
+    }
+});
+
+async function runComparison() {
+    const userSource = document.getElementById('userSource').value;
+    const refSource = document.getElementById('refSource').value;
+
+    const payload = {
+        user_source: userSource,
+        ref_source: refSource
+    };
+
+    if (userSource === 'audio') {
+        payload.user_path = document.getElementById('userAudioFile').value;
+        if (!payload.user_path) {
+            alert('Please select a user audio file');
+            return;
+        }
+    } else {
+        payload.user_preset = document.getElementById('userPreset').value;
+        payload.user_bpm = parseFloat(document.getElementById('userBpm').value);
+    }
+
+    if (refSource === 'library') {
+        payload.ref_library_id = document.getElementById('refLibrary').value;
+        if (!payload.ref_library_id) {
+            alert('Please select a reference from the library');
+            return;
+        }
+    } else if (refSource === 'audio') {
+        payload.ref_path = document.getElementById('refAudioFile').value;
+        if (!payload.ref_path) {
+            alert('Please select a reference audio file');
+            return;
+        }
+    } else {
+        payload.ref_preset = document.getElementById('refPreset').value;
+        payload.ref_bpm = parseFloat(document.getElementById('refBpm').value);
+    }
+
+    document.getElementById('loadingIndicator').style.display = 'inline';
+
+    try {
+        const response = await fetch('/api/compare/overlay', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+            alert('Error: ' + data.error);
+            return;
+        }
+
+        comparisonResult = data;
+        displayResults(data);
+
+    } catch (err) {
+        alert('Error running comparison: ' + err.message);
+    } finally {
+        document.getElementById('loadingIndicator').style.display = 'none';
+    }
+}
+
+function displayResults(data) {
+    document.getElementById('resultsSection').style.display = 'block';
+
+    // Alignment score
+    const score = data.overall_alignment_score;
+    const scoreEl = document.getElementById('alignmentScore');
+    const labelEl = document.getElementById('alignmentLabel');
+
+    scoreEl.textContent = Math.round(score * 100) + '%';
+
+    if (score >= 0.9) {
+        scoreEl.style.color = '#22c55e';
+        labelEl.textContent = 'Excellent - Structure closely matches reference';
+    } else if (score >= 0.7) {
+        scoreEl.style.color = '#84cc16';
+        labelEl.textContent = 'Good - Most sections align well';
+    } else if (score >= 0.5) {
+        scoreEl.style.color = '#eab308';
+        labelEl.textContent = 'Fair - Some structural differences';
+    } else {
+        scoreEl.style.color = '#ef4444';
+        labelEl.textContent = 'Different - Structure varies significantly from reference';
+    }
+
+    // Track names
+    document.getElementById('userTrackName').textContent = data.user_template.name;
+    document.getElementById('refTrackName').textContent = data.ref_template.name;
+
+    // Timelines
+    renderTimeline('userTimeline', data.user_template);
+    renderTimeline('refTimeline', data.ref_template);
+
+    // Time axis
+    const maxDuration = Math.max(data.user_template.total_duration, data.ref_template.total_duration);
+    renderTimeAxis(maxDuration);
+
+    // Alignment details
+    renderAlignments(data.alignments);
+
+    // Insights
+    renderInsights(data.insights);
+
+    // Scroll to results
+    document.getElementById('resultsSection').scrollIntoView({ behavior: 'smooth' });
+}
+
+function renderTimeline(containerId, template) {
+    const container = document.getElementById(containerId);
+    container.innerHTML = '';
+
+    const totalDuration = template.total_duration;
+
+    template.sections.forEach(section => {
+        const div = document.createElement('div');
+        div.className = 'timeline-section';
+
+        const startPercent = (section.start_time / totalDuration) * 100;
+        const widthPercent = (section.duration / totalDuration) * 100;
+
+        div.style.left = startPercent + '%';
+        div.style.width = widthPercent + '%';
+        div.style.background = SECTION_COLORS[section.section_type] || '#6b7280';
+
+        div.textContent = section.section_type.toUpperCase();
+        div.title = `${section.section_type} - ${section.bars} bars (${formatTime(section.start_time)} - ${formatTime(section.end_time)})`;
+
+        container.appendChild(div);
+    });
+}
+
+function renderTimeAxis(maxDuration) {
+    const container = document.getElementById('timeAxis');
+    container.innerHTML = '';
+
+    const steps = 6;
+    for (let i = 0; i <= steps; i++) {
+        const time = (maxDuration / steps) * i;
+        const span = document.createElement('span');
+        span.textContent = formatTime(time);
+        container.appendChild(span);
+    }
+}
+
+function renderAlignments(alignments) {
+    const container = document.getElementById('alignmentDetails');
+    container.innerHTML = '';
+
+    alignments.forEach(alignment => {
+        const row = document.createElement('div');
+        row.className = 'alignment-row ' + alignment.status;
+
+        const statusIcon = {
+            'aligned': '✓',
+            'early': '◀',
+            'late': '▶',
+            'missing_user': '✗',
+            'missing_ref': '+'
+        }[alignment.status] || '?';
+
+        const statusColor = {
+            'aligned': '#22c55e',
+            'early': '#eab308',
+            'late': '#eab308',
+            'missing_user': '#ef4444',
+            'missing_ref': '#3b82f6'
+        }[alignment.status] || '#6b7280';
+
+        row.innerHTML = `
+            <span style="font-size: 1.5rem; margin-right: 12px; color: ${statusColor};">${statusIcon}</span>
+            <div style="flex: 1;">
+                <div style="font-weight: bold; margin-bottom: 4px;">${alignment.message}</div>
+                <div style="color: var(--text-secondary); font-size: 0.9rem;">
+                    @ ${formatTime(alignment.time_position)}
+                    ${alignment.time_diff !== 0 ? `(${alignment.time_diff > 0 ? '+' : ''}${alignment.time_diff.toFixed(1)}s)` : ''}
+                </div>
+            </div>
+        `;
+
+        container.appendChild(row);
+    });
+
+    if (alignments.length === 0) {
+        container.innerHTML = '<div style="color: var(--text-secondary); text-align: center; padding: 24px;">No section alignments found</div>';
+    }
+}
+
+function renderInsights(insights) {
+    const container = document.getElementById('insightsList');
+    container.innerHTML = '';
+
+    insights.forEach(insight => {
+        const item = document.createElement('div');
+        item.className = 'insight-item';
+
+        // Determine type based on content
+        if (insight.includes('missing') || insight.includes('Missing')) {
+            item.classList.add('warning');
+        } else if (insight.includes('shorter') || insight.includes('longer')) {
+            item.classList.add('warning');
+        } else if (insight.includes('perfect') || insight.includes('matches')) {
+            item.classList.add('success');
+        }
+
+        item.textContent = insight;
+        container.appendChild(item);
+    });
+
+    if (insights.length === 0) {
+        container.innerHTML = '<div class="insight-item success">Structures are well aligned - no specific recommendations</div>';
+    }
+}
+
+function formatTime(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return mins + ':' + secs.toString().padStart(2, '0');
+}
+</script>
+"""
+
+
+# ============================================================================
+# MIDI Extraction Page Content
+# ============================================================================
+
+MIDI_EXTRACTION_CONTENT = """
+<h1 style="margin-bottom: 30px;">MIDI Extraction & Variations</h1>
+
+<div class="two-col">
+    <!-- ALS File Selection -->
+    <div class="card">
+        <h2 class="card-title">Load ALS File</h2>
+
+        <div style="margin-bottom: 15px;">
+            <label class="settings-label">Select Ableton Project</label>
+            <select class="settings-input" id="alsFileSelect" style="width: 100%;">
+                <option value="">-- Select ALS File --</option>
+                {% for als in als_files %}
+                <option value="{{ als.path }}">{{ als.folder }} / {{ als.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <button class="btn btn-primary" onclick="loadALSFile()" style="width: 100%;">
+            Load MIDI Clips
+        </button>
+
+        <div id="loadStatus" style="margin-top: 15px; display: none; padding: 10px; border-radius: 8px; background: var(--bg-secondary);">
+        </div>
+    </div>
+
+    <!-- Project Info -->
+    <div class="card">
+        <h2 class="card-title">Project Info</h2>
+        <div id="projectInfo" style="color: var(--text-secondary);">
+            <p>Select an ALS file to see project details</p>
+        </div>
+    </div>
+</div>
+
+<!-- Track & Clip Browser -->
+<div class="card" style="margin-top: 20px;">
+    <h2 class="card-title">Tracks & Clips</h2>
+
+    <div style="display: grid; grid-template-columns: 300px 1fr; gap: 20px; min-height: 300px;">
+        <!-- Track List -->
+        <div id="trackList" style="background: var(--bg-secondary); border-radius: 8px; padding: 15px; overflow-y: auto; max-height: 400px;">
+            <div style="color: var(--text-secondary); text-align: center;">
+                No clips loaded
+            </div>
+        </div>
+
+        <!-- Clip Details -->
+        <div id="clipDetails" style="background: var(--bg-secondary); border-radius: 8px; padding: 15px;">
+            <div style="color: var(--text-secondary); text-align: center;">
+                Select a clip to see details
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Piano Roll Preview -->
+<div class="card" style="margin-top: 20px;" id="pianoRollCard" style="display: none;">
+    <h2 class="card-title">Piano Roll Preview</h2>
+    <canvas id="pianoRollCanvas" style="width: 100%; height: 150px; background: var(--bg-secondary); border-radius: 8px;"></canvas>
+</div>
+
+<!-- Variation Generator -->
+<div class="card" style="margin-top: 20px;">
+    <h2 class="card-title">Generate Variations</h2>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 15px;">
+        <label style="display: flex; align-items: center; gap: 5px;">
+            <input type="checkbox" id="varTranspose" checked> Transpose
+        </label>
+        <label style="display: flex; align-items: center; gap: 5px;">
+            <input type="checkbox" id="varHumanize" checked> Humanize
+        </label>
+        <label style="display: flex; align-items: center; gap: 5px;">
+            <input type="checkbox" id="varReverse"> Reverse
+        </label>
+        <label style="display: flex; align-items: center; gap: 5px;">
+            <input type="checkbox" id="varQuantize"> Quantize
+        </label>
+        <label style="display: flex; align-items: center; gap: 5px;">
+            <input type="checkbox" id="varVelocity"> Velocity Curves
+        </label>
+        <label style="display: flex; align-items: center; gap: 5px;">
+            <input type="checkbox" id="varOctave"> Octave Double
+        </label>
+    </div>
+
+    <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+        <label>Number of variations:</label>
+        <input type="number" id="variationCount" value="4" min="1" max="8" style="width: 60px;" class="settings-input">
+        <button class="btn btn-primary" onclick="generateVariations()" id="generateBtn" disabled>
+            Generate Variations
+        </button>
+    </div>
+
+    <div id="variationsList" style="display: none;">
+        <h3 style="margin-bottom: 10px;">Generated Variations</h3>
+        <div id="variationsContainer" style="display: flex; flex-wrap: wrap; gap: 10px;">
+        </div>
+    </div>
+</div>
+
+<!-- Export Actions -->
+<div style="display: flex; gap: 15px; margin-top: 20px; flex-wrap: wrap;">
+    <button class="btn btn-primary" onclick="downloadMIDI()" id="downloadBtn" disabled>
+        Download Selected as MIDI
+    </button>
+    <button class="btn" onclick="downloadAllVariations()" id="downloadAllBtn" disabled>
+        Download All Variations
+    </button>
+</div>
+
+<style>
+.track-item {
+    padding: 8px 12px;
+    background: var(--bg-primary);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.track-item:hover {
+    background: var(--border-color);
+}
+
+.track-item.expanded {
+    background: var(--bg-card);
+}
+
+.track-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+}
+
+.track-header .arrow {
+    transition: transform 0.2s;
+}
+
+.track-item.expanded .track-header .arrow {
+    transform: rotate(90deg);
+}
+
+.clip-list {
+    margin-top: 8px;
+    margin-left: 20px;
+    display: none;
+}
+
+.track-item.expanded .clip-list {
+    display: block;
+}
+
+.clip-item {
+    padding: 6px 10px;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    margin-bottom: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.clip-item:hover {
+    background: var(--accent);
+    color: white;
+}
+
+.clip-item.selected {
+    background: var(--accent);
+    color: white;
+}
+
+.clip-notes {
+    font-size: 0.8rem;
+    opacity: 0.8;
+}
+
+.variation-card {
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    padding: 12px;
+    min-width: 150px;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: all 0.2s;
+}
+
+.variation-card:hover {
+    border-color: var(--accent);
+}
+
+.variation-card.selected {
+    border-color: var(--accent);
+    background: var(--bg-primary);
+}
+
+.variation-name {
+    font-weight: 500;
+    margin-bottom: 4px;
+}
+
+.variation-type {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+</style>
+
+<script>
+let currentProject = null;
+let selectedClip = null;
+let selectedNotes = null;
+let generatedVariations = [];
+let selectedVariation = null;
+
+async function loadALSFile() {
+    const alsPath = document.getElementById('alsFileSelect').value;
+    if (!alsPath) {
+        alert('Please select an ALS file');
+        return;
+    }
+
+    const status = document.getElementById('loadStatus');
+    status.style.display = 'block';
+    status.style.background = 'var(--bg-secondary)';
+    status.textContent = 'Loading...';
+
+    try {
+        const response = await fetch('/api/midi/parse-als', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ als_path: alsPath })
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+            status.style.background = 'rgba(239, 68, 68, 0.2)';
+            status.style.color = 'var(--error)';
+            status.textContent = 'Error: ' + data.error;
+            return;
+        }
+
+        currentProject = data;
+        status.style.background = 'rgba(34, 197, 94, 0.2)';
+        status.style.color = 'var(--success)';
+        status.textContent = `Loaded ${data.total_clips} clips from ${data.total_tracks} tracks`;
+
+        renderProjectInfo();
+        renderTrackList();
+
+    } catch (err) {
+        status.style.background = 'rgba(239, 68, 68, 0.2)';
+        status.style.color = 'var(--error)';
+        status.textContent = 'Error: ' + err.message;
+    }
+}
+
+function renderProjectInfo() {
+    const info = document.getElementById('projectInfo');
+    if (!currentProject) {
+        info.innerHTML = '<p>Select an ALS file to see project details</p>';
+        return;
+    }
+
+    info.innerHTML = `
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+            <div><strong>File:</strong> ${currentProject.file_name}</div>
+            <div><strong>Tempo:</strong> ${currentProject.tempo} BPM</div>
+            <div><strong>MIDI Tracks:</strong> ${currentProject.total_tracks}</div>
+            <div><strong>Total Clips:</strong> ${currentProject.total_clips}</div>
+        </div>
+    `;
+}
+
+function renderTrackList() {
+    const container = document.getElementById('trackList');
+
+    if (!currentProject || !currentProject.tracks.length) {
+        container.innerHTML = '<div style="color: var(--text-secondary); text-align: center;">No MIDI clips found</div>';
+        return;
+    }
+
+    container.innerHTML = currentProject.tracks.map(track => `
+        <div class="track-item" onclick="toggleTrack(this)">
+            <div class="track-header">
+                <span class="arrow">▶</span>
+                <span>${track.name}</span>
+                <span style="color: var(--text-secondary); font-size: 0.8rem;">(${track.clips.length} clips)</span>
+            </div>
+            <div class="clip-list">
+                ${track.clips.map(clip => `
+                    <div class="clip-item" onclick="event.stopPropagation(); selectClip(${track.id}, ${clip.id})">
+                        <span>${clip.name || 'Unnamed'}</span>
+                        <span class="clip-notes">${clip.note_count} notes</span>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    `).join('');
+}
+
+function toggleTrack(element) {
+    element.classList.toggle('expanded');
+}
+
+function selectClip(trackId, clipId) {
+    // Find the clip
+    const track = currentProject.tracks.find(t => t.id === trackId);
+    if (!track) return;
+
+    const clip = track.clips.find(c => c.id === clipId);
+    if (!clip) return;
+
+    selectedClip = clip;
+    selectedNotes = clip.notes;
+
+    // Update UI selection
+    document.querySelectorAll('.clip-item').forEach(el => el.classList.remove('selected'));
+    event.target.closest('.clip-item').classList.add('selected');
+
+    // Enable buttons
+    document.getElementById('generateBtn').disabled = false;
+    document.getElementById('downloadBtn').disabled = false;
+
+    // Render clip details
+    renderClipDetails(clip);
+
+    // Render piano roll
+    renderPianoRoll(clip.notes);
+}
+
+function renderClipDetails(clip) {
+    const container = document.getElementById('clipDetails');
+
+    // Calculate duration in bars (assuming 4/4)
+    const durationBars = (clip.duration_beats / 4).toFixed(1);
+
+    // Find pitch range
+    const pitches = clip.notes.map(n => n.pitch);
+    const minPitch = Math.min(...pitches);
+    const maxPitch = Math.max(...pitches);
+
+    const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    const minNoteName = noteNames[minPitch % 12] + Math.floor(minPitch / 12 - 1);
+    const maxNoteName = noteNames[maxPitch % 12] + Math.floor(maxPitch / 12 - 1);
+
+    // Calculate velocity range
+    const velocities = clip.notes.map(n => n.velocity);
+    const minVel = Math.min(...velocities);
+    const maxVel = Math.max(...velocities);
+    const avgVel = Math.round(velocities.reduce((a, b) => a + b, 0) / velocities.length);
+
+    container.innerHTML = `
+        <h3 style="margin-bottom: 15px;">${clip.name || 'Unnamed Clip'}</h3>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+            <div>
+                <div style="color: var(--text-secondary); font-size: 0.85rem;">Notes</div>
+                <div style="font-size: 1.2rem; font-weight: 500;">${clip.note_count}</div>
+            </div>
+            <div>
+                <div style="color: var(--text-secondary); font-size: 0.85rem;">Duration</div>
+                <div style="font-size: 1.2rem; font-weight: 500;">${durationBars} bars</div>
+            </div>
+            <div>
+                <div style="color: var(--text-secondary); font-size: 0.85rem;">Pitch Range</div>
+                <div style="font-size: 1rem;">${minNoteName} - ${maxNoteName}</div>
+            </div>
+            <div>
+                <div style="color: var(--text-secondary); font-size: 0.85rem;">Velocity</div>
+                <div style="font-size: 1rem;">${minVel} - ${maxVel} (avg ${avgVel})</div>
+            </div>
+        </div>
+
+        <div style="margin-top: 20px;">
+            <button class="btn" onclick="analyzeClip()" style="width: 100%;">
+                Analyze Scale & Patterns
+            </button>
+        </div>
+
+        <div id="analysisResult" style="margin-top: 15px; display: none;"></div>
+    `;
+}
+
+async function analyzeClip() {
+    if (!selectedNotes) return;
+
+    try {
+        const response = await fetch('/api/midi/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ notes: selectedNotes })
+        });
+
+        const data = await response.json();
+        const result = document.getElementById('analysisResult');
+        result.style.display = 'block';
+
+        if (data.error) {
+            result.innerHTML = `<div style="color: var(--error);">Error: ${data.error}</div>`;
+            return;
+        }
+
+        result.innerHTML = `
+            <div style="background: var(--bg-primary); padding: 10px; border-radius: 6px;">
+                <div style="margin-bottom: 8px;">
+                    <strong>Detected Scale:</strong> ${data.scale || 'Unknown'}
+                </div>
+            </div>
+        `;
+
+    } catch (err) {
+        console.error(err);
+    }
+}
+
+function renderPianoRoll(notes) {
+    const canvas = document.getElementById('pianoRollCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Set canvas size
+    canvas.width = canvas.offsetWidth * 2;
+    canvas.height = 300;
+    ctx.scale(2, 2);
+
+    const width = canvas.offsetWidth;
+    const height = 150;
+
+    // Clear
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(0, 0, width, height);
+
+    if (!notes || notes.length === 0) return;
+
+    // Find ranges
+    const minPitch = Math.min(...notes.map(n => n.pitch)) - 2;
+    const maxPitch = Math.max(...notes.map(n => n.pitch)) + 2;
+    const pitchRange = maxPitch - minPitch;
+
+    const minTime = Math.min(...notes.map(n => n.start_time));
+    const maxTime = Math.max(...notes.map(n => n.start_time + n.duration));
+    const timeRange = maxTime - minTime;
+
+    // Draw grid lines
+    ctx.strokeStyle = '#2a2a3e';
+    ctx.lineWidth = 0.5;
+
+    // Horizontal lines (pitches)
+    for (let p = minPitch; p <= maxPitch; p++) {
+        const y = height - ((p - minPitch) / pitchRange) * height;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+    }
+
+    // Vertical lines (beats)
+    for (let t = Math.floor(minTime); t <= Math.ceil(maxTime); t++) {
+        const x = ((t - minTime) / timeRange) * width;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+    }
+
+    // Draw notes
+    notes.forEach(note => {
+        const x = ((note.start_time - minTime) / timeRange) * width;
+        const y = height - ((note.pitch - minPitch) / pitchRange) * height;
+        const w = (note.duration / timeRange) * width;
+        const h = height / pitchRange * 0.8;
+
+        // Note color based on velocity
+        const velRatio = note.velocity / 127;
+        const r = Math.round(100 + velRatio * 155);
+        const g = Math.round(120 + velRatio * 80);
+        const b = Math.round(200 - velRatio * 50);
+
+        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+        ctx.fillRect(x, y - h/2, Math.max(w, 2), h);
+
+        // Note border
+        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.strokeRect(x, y - h/2, Math.max(w, 2), h);
+    });
+
+    document.getElementById('pianoRollCard').style.display = 'block';
+}
+
+async function generateVariations() {
+    if (!selectedNotes || selectedNotes.length === 0) {
+        alert('Please select a clip first');
+        return;
+    }
+
+    const count = parseInt(document.getElementById('variationCount').value) || 4;
+
+    // Build variation types based on checkboxes
+    const types = [];
+    if (document.getElementById('varTranspose').checked) {
+        types.push('transpose_up', 'transpose_down');
+    }
+    if (document.getElementById('varHumanize').checked) {
+        types.push('humanize');
+    }
+    if (document.getElementById('varReverse').checked) {
+        types.push('reverse');
+    }
+    if (document.getElementById('varQuantize').checked) {
+        types.push('quantize');
+    }
+    if (document.getElementById('varVelocity').checked) {
+        types.push('crescendo', 'decrescendo');
+    }
+    if (document.getElementById('varOctave').checked) {
+        types.push('octave_up', 'octave_down');
+    }
+
+    try {
+        const response = await fetch('/api/midi/variations', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                notes: selectedNotes,
+                clip_name: selectedClip?.name || 'Clip',
+                count: count,
+                variation_types: types.length > 0 ? types : null
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+            alert('Error: ' + data.error);
+            return;
+        }
+
+        generatedVariations = data.variations;
+        renderVariations();
+
+        document.getElementById('downloadAllBtn').disabled = false;
+
+    } catch (err) {
+        alert('Error generating variations: ' + err.message);
+    }
+}
+
+function renderVariations() {
+    const container = document.getElementById('variationsContainer');
+    const list = document.getElementById('variationsList');
+
+    if (!generatedVariations.length) {
+        list.style.display = 'none';
+        return;
+    }
+
+    list.style.display = 'block';
+
+    container.innerHTML = generatedVariations.map((v, i) => `
+        <div class="variation-card ${selectedVariation === i ? 'selected' : ''}" onclick="selectVariation(${i})">
+            <div class="variation-name">${v.name}</div>
+            <div class="variation-type">${v.variation_type.replace('_', ' ')}</div>
+            <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 4px;">
+                ${v.note_count} notes
+            </div>
+        </div>
+    `).join('');
+}
+
+function selectVariation(index) {
+    selectedVariation = index;
+    selectedNotes = generatedVariations[index].notes;
+
+    document.querySelectorAll('.variation-card').forEach((el, i) => {
+        el.classList.toggle('selected', i === index);
+    });
+
+    renderPianoRoll(selectedNotes);
+}
+
+async function downloadMIDI() {
+    if (!selectedNotes || selectedNotes.length === 0) {
+        alert('Please select a clip or variation first');
+        return;
+    }
+
+    const clipName = selectedVariation !== null
+        ? generatedVariations[selectedVariation].name
+        : (selectedClip?.name || 'exported');
+
+    try {
+        const response = await fetch('/api/midi/export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                notes: selectedNotes,
+                clip_name: clipName,
+                tempo: currentProject?.tempo || 120
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+            alert('Error: ' + data.error);
+            return;
+        }
+
+        // Download the file
+        const blob = b64toBlob(data.data, 'audio/midi');
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = data.filename;
+        a.click();
+        URL.revokeObjectURL(url);
+
+    } catch (err) {
+        alert('Error downloading MIDI: ' + err.message);
+    }
+}
+
+async function downloadAllVariations() {
+    if (!generatedVariations.length) {
+        alert('No variations to download');
+        return;
+    }
+
+    for (let i = 0; i < generatedVariations.length; i++) {
+        const v = generatedVariations[i];
+
+        try {
+            const response = await fetch('/api/midi/export', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    notes: v.notes,
+                    clip_name: v.name,
+                    tempo: currentProject?.tempo || 120
+                })
+            });
+
+            const data = await response.json();
+
+            if (!data.error) {
+                const blob = b64toBlob(data.data, 'audio/midi');
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = data.filename;
+                a.click();
+                URL.revokeObjectURL(url);
+            }
+
+            // Small delay between downloads
+            await new Promise(r => setTimeout(r, 200));
+
+        } catch (err) {
+            console.error('Error downloading variation:', err);
+        }
+    }
+}
+
+function b64toBlob(b64Data, contentType) {
+    const byteCharacters = atob(b64Data);
+    const byteArrays = [];
+
+    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+        const slice = byteCharacters.slice(offset, offset + 512);
+        const byteNumbers = new Array(slice.length);
+
+        for (let i = 0; i < slice.length; i++) {
+            byteNumbers[i] = slice.charCodeAt(i);
+        }
+
+        byteArrays.push(new Uint8Array(byteNumbers));
+    }
+
+    return new Blob(byteArrays, { type: contentType });
+}
+</script>
+"""
+
+
 # ============================================================================
 # Flask Application Factory
 # ============================================================================
@@ -2055,6 +5083,903 @@ def register_routes(app: 'Flask'):
                 for a in history
             ]
         })
+
+    # ========================================================================
+    # Arrangement Analysis Routes
+    # ========================================================================
+
+    @app.route('/arrangement')
+    def arrangement():
+        """Arrangement analysis page."""
+        config = app.config['dashboard_config']
+        audio_files = get_audio_files_list()
+
+        content = render_template_string(
+            ARRANGEMENT_CONTENT,
+            audio_files=audio_files
+        )
+
+        return render_template_string(
+            BASE_TEMPLATE,
+            title="Arrangement Analysis",
+            css=DASHBOARD_CSS,
+            content=content,
+            active='arrangement',
+            timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            auto_refresh=False,
+            refresh_interval=config.refresh_interval,
+            extra_head='',
+            extra_js=''
+        )
+
+    @app.route('/api/arrangement/files')
+    def api_arrangement_files():
+        """Get list of available audio files."""
+        return jsonify(get_audio_files_list())
+
+    @app.route('/api/arrangement/analyze', methods=['POST'])
+    def api_arrangement_analyze():
+        """Analyze arrangement of an audio file."""
+        import json
+
+        audio_path = request.json.get('audio_path')
+        if not audio_path:
+            return jsonify({'error': 'No audio path provided'}), 400
+
+        audio_path = Path(audio_path)
+        if not audio_path.exists():
+            return jsonify({'error': f'File not found: {audio_path}'}), 404
+
+        try:
+            # Import the analyzers
+            try:
+                from structure_detector import StructureDetector
+                from arrangement_scorer import ArrangementScorer
+            except ImportError:
+                from src.structure_detector import StructureDetector
+                from src.arrangement_scorer import ArrangementScorer
+
+            # Run structure detection
+            detector = StructureDetector()
+            structure = detector.detect(str(audio_path))
+
+            # Run arrangement scoring
+            scorer = ArrangementScorer()
+            score = scorer.score(structure)
+
+            # Convert to JSON-serializable format
+            result = score.to_dict()
+
+            return jsonify(result)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': str(e)}), 500
+
+    # ========================================================================
+    # Template Routes
+    # ========================================================================
+
+    @app.route('/templates')
+    def templates():
+        """Arrangement templates page."""
+        config = app.config['dashboard_config']
+
+        # Get presets and audio files
+        try:
+            from template_generator import TemplateGenerator
+        except ImportError:
+            from src.template_generator import TemplateGenerator
+
+        generator = TemplateGenerator()
+        presets = generator.get_preset_names()
+        audio_files = get_audio_files_list()
+
+        content = render_template_string(
+            TEMPLATES_CONTENT,
+            presets=presets,
+            audio_files=audio_files
+        )
+
+        return render_template_string(
+            BASE_TEMPLATE,
+            title="Arrangement Templates",
+            css=DASHBOARD_CSS,
+            content=content,
+            active='templates',
+            timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            auto_refresh=False,
+            refresh_interval=config.refresh_interval,
+            extra_head='',
+            extra_js=''
+        )
+
+    @app.route('/midi')
+    def midi_extraction():
+        """MIDI extraction and variation generator page."""
+        config = app.config['dashboard_config']
+
+        als_files = get_als_files_list()
+
+        content = render_template_string(
+            MIDI_EXTRACTION_CONTENT,
+            als_files=als_files
+        )
+
+        return render_template_string(
+            BASE_TEMPLATE,
+            title="MIDI Extraction",
+            css=DASHBOARD_CSS,
+            content=content,
+            active='midi',
+            timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            auto_refresh=False,
+            refresh_interval=config.refresh_interval,
+            extra_head='',
+            extra_js=''
+        )
+
+    @app.route('/api/templates/presets')
+    def api_template_presets():
+        """Get list of available template presets."""
+        try:
+            from template_generator import TemplateGenerator
+        except ImportError:
+            from src.template_generator import TemplateGenerator
+
+        generator = TemplateGenerator()
+        return jsonify(generator.get_preset_names())
+
+    @app.route('/api/templates/generate', methods=['POST'])
+    def api_generate_template():
+        """Generate a template from preset or reference."""
+        try:
+            from template_generator import TemplateGenerator
+        except ImportError:
+            from src.template_generator import TemplateGenerator
+
+        data = request.json
+        source = data.get('source')
+        bpm = data.get('bpm', 138)
+
+        generator = TemplateGenerator()
+
+        try:
+            if source == 'preset':
+                preset = data.get('preset', 'standard_trance')
+                template = generator.from_genre_preset(preset, bpm)
+            elif source == 'reference':
+                audio_path = data.get('audio_path')
+                if not audio_path:
+                    return jsonify({'error': 'No audio path provided'}), 400
+                template = generator.from_reference(audio_path)
+                # Apply custom BPM if different
+                if bpm and abs(template.bpm - bpm) > 1:
+                    template = generator.customize(template, bpm=bpm)
+            else:
+                return jsonify({'error': 'Invalid source type'}), 400
+
+            return jsonify(template.to_dict())
+
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/templates/customize', methods=['POST'])
+    def api_customize_template():
+        """Customize a template's sections or BPM."""
+        try:
+            from template_generator import TemplateGenerator, ArrangementTemplate
+        except ImportError:
+            from src.template_generator import TemplateGenerator, ArrangementTemplate
+
+        data = request.json
+        template_data = data.get('template')
+        bpm = data.get('bpm')
+        sections = data.get('sections')
+
+        if not template_data:
+            return jsonify({'error': 'No template provided'}), 400
+
+        try:
+            # Reconstruct template from dict
+            template = ArrangementTemplate.from_dict(template_data)
+
+            # Apply customizations
+            generator = TemplateGenerator()
+            template = generator.customize(template, bpm=bpm, sections=sections)
+
+            return jsonify(template.to_dict())
+
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/templates/ableton-status')
+    def api_ableton_status():
+        """Check Ableton connection status."""
+        try:
+            from ableton_bridge import AbletonBridge
+        except ImportError:
+            from src.ableton_bridge import AbletonBridge
+
+        try:
+            bridge = AbletonBridge()
+            if bridge.connect():
+                state = bridge.read_session_state(include_devices=False)
+                if state:
+                    return jsonify({
+                        'connected': True,
+                        'tempo': state.tempo,
+                        'tracks': len(state.tracks)
+                    })
+            return jsonify({
+                'connected': False,
+                'error': bridge.last_error or 'Could not connect'
+            })
+        except Exception as e:
+            return jsonify({
+                'connected': False,
+                'error': str(e)
+            })
+
+    @app.route('/api/templates/send-to-ableton', methods=['POST'])
+    def api_send_to_ableton():
+        """Send template to Ableton Live."""
+        try:
+            from ableton_bridge import AbletonBridge
+            from template_generator import ArrangementTemplate
+        except ImportError:
+            from src.ableton_bridge import AbletonBridge
+            from src.template_generator import ArrangementTemplate
+
+        data = request.json
+        template_data = data.get('template')
+
+        if not template_data:
+            return jsonify({'error': 'No template provided'}), 400
+
+        try:
+            template = ArrangementTemplate.from_dict(template_data)
+
+            bridge = AbletonBridge()
+            if not bridge.connect():
+                return jsonify({
+                    'success': False,
+                    'message': 'Could not connect to Ableton: ' + (bridge.last_error or 'Unknown error'),
+                    'manual_locators': template.to_locators()
+                })
+
+            success, message, manual_locators = bridge.send_template(template)
+
+            return jsonify({
+                'success': success,
+                'message': message,
+                'manual_locators': manual_locators
+            })
+
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'message': str(e),
+                'manual_locators': []
+            }), 500
+
+    # ========================================================================
+    # Reference Overlay Routes
+    # ========================================================================
+
+    @app.route('/compare')
+    def compare_page():
+        """Reference overlay comparison page."""
+        config = app.config['dashboard_config']
+        audio_files = get_audio_files_list()
+
+        # Get presets for quick reference selection
+        try:
+            from template_generator import TemplateGenerator
+        except ImportError:
+            from src.template_generator import TemplateGenerator
+
+        generator = TemplateGenerator()
+        presets = generator.get_preset_names()
+
+        content = render_template_string(
+            COMPARE_OVERLAY_CONTENT,
+            audio_files=audio_files,
+            presets=presets
+        )
+
+        return render_template_string(
+            BASE_TEMPLATE,
+            title="Reference Overlay",
+            css=DASHBOARD_CSS,
+            content=content,
+            active='templates',  # Keep Templates highlighted in nav
+            timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            auto_refresh=False,
+            refresh_interval=config.refresh_interval,
+            extra_head='',
+            extra_js=''
+        )
+
+    @app.route('/api/compare/overlay', methods=['POST'])
+    def api_compare_overlay():
+        """Compare user track against reference track."""
+        try:
+            from template_generator import TemplateGenerator, ReferenceOverlay, ArrangementTemplate
+            from reference_library import ReferenceLibrary
+        except ImportError:
+            from src.template_generator import TemplateGenerator, ReferenceOverlay, ArrangementTemplate
+            from src.reference_library import ReferenceLibrary
+
+        data = request.json
+        user_source = data.get('user_source')  # 'audio', 'preset', or 'library'
+        ref_source = data.get('ref_source')    # 'audio', 'preset', or 'library'
+
+        generator = TemplateGenerator()
+        library = ReferenceLibrary()
+
+        try:
+            # Get user template
+            if user_source == 'audio':
+                user_path = data.get('user_path')
+                if not user_path:
+                    return jsonify({'error': 'No user audio path provided'}), 400
+                user_template = generator.from_reference(user_path)
+            elif user_source == 'preset':
+                preset = data.get('user_preset', 'standard_trance')
+                bpm = data.get('user_bpm', 138)
+                user_template = generator.from_genre_preset(preset, bpm)
+            elif user_source == 'library':
+                ref_id = data.get('user_library_id')
+                if not ref_id:
+                    return jsonify({'error': 'No library reference ID provided'}), 400
+                user_template = library.to_template(ref_id)
+                if not user_template:
+                    return jsonify({'error': 'User reference not found in library'}), 404
+            else:
+                return jsonify({'error': 'Invalid user source'}), 400
+
+            # Get reference template
+            if ref_source == 'audio':
+                ref_path = data.get('ref_path')
+                if not ref_path:
+                    return jsonify({'error': 'No reference audio path provided'}), 400
+                ref_template = generator.from_reference(ref_path)
+            elif ref_source == 'preset':
+                preset = data.get('ref_preset', 'standard_trance')
+                bpm = data.get('ref_bpm', 138)
+                ref_template = generator.from_genre_preset(preset, bpm)
+            elif ref_source == 'library':
+                ref_id = data.get('ref_library_id')
+                if not ref_id:
+                    return jsonify({'error': 'No library reference ID provided'}), 400
+                ref_template = library.to_template(ref_id)
+                if not ref_template:
+                    return jsonify({'error': 'Reference not found in library'}), 404
+            else:
+                return jsonify({'error': 'Invalid reference source'}), 400
+
+            # Run comparison
+            overlay = ReferenceOverlay()
+            comparison = overlay.compare(user_template, ref_template)
+
+            return jsonify(comparison.to_dict())
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': str(e)}), 500
+
+    # ========================================================================
+    # Reference Library Routes
+    # ========================================================================
+
+    @app.route('/api/library/references')
+    def api_list_references():
+        """List all saved references in the library."""
+        try:
+            from reference_library import ReferenceLibrary
+        except ImportError:
+            from src.reference_library import ReferenceLibrary
+
+        try:
+            library = ReferenceLibrary()
+            tag = request.args.get('tag')
+            references = library.list_references(tag=tag)
+            stats = library.get_stats()
+
+            return jsonify({
+                'references': [ref.to_dict() for ref in references],
+                'stats': stats
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/library/references', methods=['POST'])
+    def api_save_reference():
+        """Save a template to the library."""
+        try:
+            from reference_library import ReferenceLibrary
+            from template_generator import ArrangementTemplate
+        except ImportError:
+            from src.reference_library import ReferenceLibrary
+            from src.template_generator import ArrangementTemplate
+
+        data = request.json
+        template_data = data.get('template')
+        name = data.get('name')
+        tags = data.get('tags', [])
+        notes = data.get('notes', '')
+
+        if not template_data:
+            return jsonify({'error': 'No template provided'}), 400
+
+        try:
+            template = ArrangementTemplate.from_dict(template_data)
+            library = ReferenceLibrary()
+            ref_id = library.save_reference(template, name=name, tags=tags, notes=notes)
+
+            return jsonify({
+                'success': True,
+                'id': ref_id,
+                'message': f'Saved "{name or template.name}" to library'
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/library/references/<ref_id>')
+    def api_get_reference(ref_id):
+        """Get a specific reference from the library."""
+        try:
+            from reference_library import ReferenceLibrary
+        except ImportError:
+            from src.reference_library import ReferenceLibrary
+
+        try:
+            library = ReferenceLibrary()
+            ref = library.get_reference(ref_id)
+
+            if ref:
+                return jsonify(ref.to_dict())
+            else:
+                return jsonify({'error': 'Reference not found'}), 404
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/library/references/<ref_id>', methods=['DELETE'])
+    def api_delete_reference(ref_id):
+        """Delete a reference from the library."""
+        try:
+            from reference_library import ReferenceLibrary
+        except ImportError:
+            from src.reference_library import ReferenceLibrary
+
+        try:
+            library = ReferenceLibrary()
+            if library.delete_reference(ref_id):
+                return jsonify({'success': True, 'message': 'Reference deleted'})
+            else:
+                return jsonify({'error': 'Reference not found'}), 404
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/library/references/<ref_id>', methods=['PUT'])
+    def api_update_reference(ref_id):
+        """Update reference metadata."""
+        try:
+            from reference_library import ReferenceLibrary
+        except ImportError:
+            from src.reference_library import ReferenceLibrary
+
+        data = request.json
+
+        try:
+            library = ReferenceLibrary()
+            if library.update_reference(
+                ref_id,
+                name=data.get('name'),
+                tags=data.get('tags'),
+                notes=data.get('notes')
+            ):
+                return jsonify({'success': True, 'message': 'Reference updated'})
+            else:
+                return jsonify({'error': 'Reference not found'}), 404
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/library/references/<ref_id>/template')
+    def api_reference_to_template(ref_id):
+        """Convert a library reference to a template."""
+        try:
+            from reference_library import ReferenceLibrary
+        except ImportError:
+            from src.reference_library import ReferenceLibrary
+
+        bpm = request.args.get('bpm', type=float)
+
+        try:
+            library = ReferenceLibrary()
+            template = library.to_template(ref_id, bpm=bpm)
+
+            if template:
+                return jsonify(template.to_dict())
+            else:
+                return jsonify({'error': 'Reference not found'}), 404
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    # ==================== Marker Sync API ====================
+
+    @app.route('/api/sync/status')
+    def api_sync_status():
+        """Get current sync status and Ableton connection info."""
+        try:
+            from sync_manager import MarkerSyncManager
+        except ImportError:
+            from src.sync_manager import MarkerSyncManager
+
+        try:
+            manager = MarkerSyncManager()
+            status = manager.get_status()
+            return jsonify(status)
+        except Exception as e:
+            return jsonify({
+                'connected': False,
+                'error': str(e)
+            })
+
+    @app.route('/api/sync/pull')
+    def api_sync_pull():
+        """Pull markers from Ableton."""
+        try:
+            from sync_manager import MarkerSyncManager
+        except ImportError:
+            from src.sync_manager import MarkerSyncManager
+
+        try:
+            manager = MarkerSyncManager()
+            markers, message = manager.pull_from_ableton()
+            return jsonify({
+                'success': len(markers) > 0,
+                'message': message,
+                'markers': markers
+            })
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': str(e),
+                'markers': []
+            })
+
+    @app.route('/api/sync/push', methods=['POST'])
+    def api_sync_push():
+        """Push markers to Ableton."""
+        try:
+            from sync_manager import MarkerSyncManager
+        except ImportError:
+            from src.sync_manager import MarkerSyncManager
+
+        data = request.get_json() or {}
+        markers = data.get('markers', [])
+        clear_first = data.get('clear_first', True)
+
+        try:
+            manager = MarkerSyncManager()
+            result = manager.push_to_ableton(markers, clear_first=clear_first)
+            return jsonify(result.to_dict())
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            })
+
+    @app.route('/api/sync/diff', methods=['POST'])
+    def api_sync_diff():
+        """Get diff between dashboard markers and Ableton markers."""
+        try:
+            from sync_manager import MarkerSyncManager
+        except ImportError:
+            from src.sync_manager import MarkerSyncManager
+
+        data = request.get_json() or {}
+        dashboard_markers = data.get('markers', [])
+
+        try:
+            manager = MarkerSyncManager()
+            diffs = manager.diff(dashboard_markers)
+            return jsonify({
+                'success': True,
+                'diffs': [d.to_dict() for d in diffs],
+                'summary': {
+                    'matches': sum(1 for d in diffs if d.action.value == 'match'),
+                    'to_add': sum(1 for d in diffs if d.action.value == 'add'),
+                    'to_delete': sum(1 for d in diffs if d.action.value == 'delete'),
+                    'to_update': sum(1 for d in diffs if d.action.value == 'update')
+                }
+            })
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            })
+
+    # ==================== MIDI Extraction API ====================
+
+    @app.route('/api/midi/als-files')
+    def api_midi_als_files():
+        """Get list of ALS files from project directories."""
+        als_files = get_als_files_list()
+        return jsonify(als_files)
+
+    @app.route('/api/midi/parse-als', methods=['POST'])
+    def api_midi_parse_als():
+        """Parse ALS file and return all MIDI clips."""
+        try:
+            from als_parser import ALSParser
+        except ImportError:
+            from src.als_parser import ALSParser
+
+        data = request.get_json() or {}
+        als_path = data.get('als_path')
+
+        if not als_path:
+            return jsonify({'error': 'No ALS path provided'}), 400
+
+        als_path = Path(als_path)
+        if not als_path.exists():
+            return jsonify({'error': f'File not found: {als_path}'}), 404
+
+        try:
+            parser = ALSParser()
+            project = parser.parse(str(als_path))
+
+            # Build response with tracks and clips
+            tracks = []
+            for track in project.tracks:
+                if track.midi_clips:
+                    track_data = {
+                        'id': track.id,
+                        'name': track.name,
+                        'type': track.track_type,
+                        'clips': []
+                    }
+                    for i, clip in enumerate(track.midi_clips):
+                        clip_data = {
+                            'id': i,
+                            'name': clip.name,
+                            'start_time': clip.start_time,
+                            'end_time': clip.end_time,
+                            'note_count': len(clip.notes),
+                            'duration_beats': round(clip.end_time - clip.start_time, 2),
+                            'notes': [
+                                {
+                                    'pitch': n.pitch,
+                                    'velocity': n.velocity,
+                                    'start_time': round(n.start_time, 4),
+                                    'duration': round(n.duration, 4)
+                                }
+                                for n in clip.notes
+                            ]
+                        }
+                        track_data['clips'].append(clip_data)
+                    tracks.append(track_data)
+
+            return jsonify({
+                'success': True,
+                'file_name': als_path.name,
+                'tempo': project.tempo,
+                'tracks': tracks,
+                'total_tracks': len(tracks),
+                'total_clips': sum(len(t['clips']) for t in tracks)
+            })
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/midi/variations', methods=['POST'])
+    def api_midi_variations():
+        """Generate variations of a MIDI clip."""
+        try:
+            from midi_generator import MIDIVariationGenerator, MIDIVariation
+            from als_parser import MIDINote, MIDIClip
+        except ImportError:
+            from src.midi_generator import MIDIVariationGenerator, MIDIVariation
+            from src.als_parser import MIDINote, MIDIClip
+
+        data = request.get_json() or {}
+        notes_data = data.get('notes', [])
+        clip_name = data.get('clip_name', 'Clip')
+        count = data.get('count', 4)
+        variation_types = data.get('variation_types')
+
+        if not notes_data:
+            return jsonify({'error': 'No notes provided'}), 400
+
+        try:
+            # Reconstruct notes
+            notes = [
+                MIDINote(
+                    pitch=n['pitch'],
+                    velocity=n['velocity'],
+                    start_time=n['start_time'],
+                    duration=n['duration'],
+                    mute=n.get('mute', False)
+                )
+                for n in notes_data
+            ]
+
+            # Create clip
+            clip = MIDIClip(
+                name=clip_name,
+                start_time=0,
+                end_time=max(n.start_time + n.duration for n in notes) if notes else 0,
+                loop_start=0,
+                loop_end=0,
+                notes=notes
+            )
+
+            # Generate variations
+            generator = MIDIVariationGenerator()
+            variations = generator.generate_variations(clip, count, variation_types)
+
+            return jsonify({
+                'success': True,
+                'variations': [v.to_dict() for v in variations],
+                'count': len(variations)
+            })
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/midi/export', methods=['POST'])
+    def api_midi_export():
+        """Export MIDI clip to downloadable file."""
+        try:
+            from midi_exporter import MIDIExporter
+            from als_parser import MIDINote
+        except ImportError:
+            from src.midi_exporter import MIDIExporter
+            from src.als_parser import MIDINote
+
+        data = request.get_json() or {}
+        notes_data = data.get('notes', [])
+        clip_name = data.get('clip_name', 'exported')
+        tempo = data.get('tempo', 120)
+
+        if not notes_data:
+            return jsonify({'error': 'No notes provided'}), 400
+
+        try:
+            # Reconstruct notes
+            notes = [
+                MIDINote(
+                    pitch=n['pitch'],
+                    velocity=n['velocity'],
+                    start_time=n['start_time'],
+                    duration=n['duration'],
+                    mute=n.get('mute', False)
+                )
+                for n in notes_data
+            ]
+
+            # Export to bytes
+            exporter = MIDIExporter(default_tempo=tempo)
+            midi_data = exporter.export_to_bytes(notes, tempo, clip_name)
+
+            if midi_data:
+                import base64
+                return jsonify({
+                    'success': True,
+                    'data': base64.b64encode(midi_data).decode('utf-8'),
+                    'filename': f"{clip_name}.mid",
+                    'size': len(midi_data)
+                })
+            else:
+                return jsonify({'error': 'Failed to generate MIDI data'}), 500
+
+        except ImportError as e:
+            return jsonify({'error': f'MIDI export not available: {str(e)}. Install midiutil: pip install midiutil'}), 500
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/midi/analyze', methods=['POST'])
+    def api_midi_analyze():
+        """Analyze MIDI notes and return statistics."""
+        try:
+            from midi_generator import MIDIVariationGenerator
+            from als_parser import MIDINote
+        except ImportError:
+            from src.midi_generator import MIDIVariationGenerator
+            from src.als_parser import MIDINote
+
+        data = request.get_json() or {}
+        notes_data = data.get('notes', [])
+
+        if not notes_data:
+            return jsonify({'error': 'No notes provided'}), 400
+
+        try:
+            notes = [
+                MIDINote(
+                    pitch=n['pitch'],
+                    velocity=n['velocity'],
+                    start_time=n['start_time'],
+                    duration=n['duration'],
+                    mute=n.get('mute', False)
+                )
+                for n in notes_data
+            ]
+
+            generator = MIDIVariationGenerator()
+            stats = generator.get_note_stats(notes)
+
+            return jsonify({
+                'success': True,
+                **stats
+            })
+
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+
+def get_als_files_list() -> List[Dict[str, str]]:
+    """Get list of ALS files from project directories."""
+    als_files = []
+
+    # Check Ableton Projects folder
+    projects_dir = Path("D:/OneDrive/Music/Projects/Ableton/Ableton Projects")
+    if projects_dir.exists():
+        for als in projects_dir.glob('**/*.als'):
+            als_files.append({
+                'name': als.stem,
+                'path': str(als),
+                'folder': als.parent.name
+            })
+
+    # Sort by folder then name
+    als_files.sort(key=lambda x: (x['folder'].lower(), x['name'].lower()))
+
+    return als_files
+
+
+def get_audio_files_list() -> List[Dict[str, str]]:
+    """Get list of audio files from configured directories."""
+    audio_files = []
+    audio_extensions = {'.wav', '.mp3', '.flac', '.aiff', '.ogg', '.m4a'}
+
+    # Check the standard music projects directory
+    projects_dir = Path("D:/OneDrive/Music/Projects")
+    if projects_dir.exists():
+        for f in projects_dir.glob('*'):
+            if f.is_file() and f.suffix.lower() in audio_extensions:
+                audio_files.append({
+                    'name': f.name,
+                    'path': str(f)
+                })
+
+    # Also check local test files
+    local_dir = Path(".")
+    for f in local_dir.glob('*.wav'):
+        audio_files.append({
+            'name': f.name,
+            'path': str(f.absolute())
+        })
+
+    # Sort by name
+    audio_files.sort(key=lambda x: x['name'].lower())
+
+    return audio_files
 
 
 def get_auto_refresh_meta(config: DashboardConfig) -> str:
@@ -2806,3 +6731,7 @@ def run_dashboard(
         debug=debug,
         use_reloader=debug
     )
+
+
+if __name__ == '__main__':
+    run_dashboard(no_browser=True)

@@ -68,6 +68,7 @@ from html_reports import (
     get_default_report_path, ProjectReportData, HistoryReportData, LibraryReportData,
     ReportIssue, ReportVersion, GradeData
 )
+from als_json_output import create_json_output, ALSDoctorJSON
 
 
 @click.group()
@@ -2399,6 +2400,19 @@ def _analyze_als_file(als_path: Path, fmt: Optional[CLIFormatter] = None) -> Opt
 
     Returns None if analysis fails.
     """
+    result = _analyze_als_file_full(als_path, fmt)
+    if result:
+        return result[0]  # Just the ScanResult
+    return None
+
+
+def _analyze_als_file_full(als_path: Path, fmt: Optional[CLIFormatter] = None):
+    """
+    Analyze a single .als file and return both ScanResult and device analysis.
+
+    Returns:
+        Tuple of (ScanResult, ProjectDeviceAnalysis) or None if analysis fails.
+    """
     if fmt is None:
         fmt = get_formatter()
 
@@ -2436,7 +2450,7 @@ def _analyze_als_file(als_path: Path, fmt: Optional[CLIFormatter] = None) -> Opt
                     fix_suggestion=issue.recommendation
                 ))
 
-        return ScanResult(
+        scan_result = ScanResult(
             als_path=str(als_path),
             health_score=diagnosis.overall_health,
             grade=_calculate_grade(diagnosis.overall_health),
@@ -2448,6 +2462,8 @@ def _analyze_als_file(als_path: Path, fmt: Optional[CLIFormatter] = None) -> Opt
             clutter_percentage=diagnosis.clutter_percentage,
             issues=issues
         )
+
+        return (scan_result, analysis)
     except Exception as e:
         fmt.error(f"analyzing {als_path.name}: {e}", prefix="  ERROR ")
         return None
@@ -2547,13 +2563,24 @@ def scan_cmd(ctx, directory: str, save: bool, limit: Optional[int]):
 @click.option('--no-smart', is_flag=True, help='Disable smart recommendations')
 @click.option('--html', type=click.Path(), default=None,
               help='Generate HTML report (optionally specify output path)')
+@click.option('--format', '-f', 'output_format', type=click.Choice(['text', 'json']),
+              default='text', help='Output format (default: text)')
+@click.option('--output', '-o', type=click.Path(), default=None,
+              help='Output file for JSON format')
 @click.pass_context
 def diagnose_cmd(ctx, file: str, save: bool, verbose: bool, midi: bool,
-                 smart: Optional[bool], no_smart: bool, html: Optional[str]):
+                 smart: Optional[bool], no_smart: bool, html: Optional[str],
+                 output_format: str, output: Optional[str]):
     """Analyze a single .als file.
 
     Performs a detailed health analysis on the specified
     Ableton Live Set file.
+
+    Use --format json for structured JSON output:
+    - Includes track names and indices for DeviceResolver
+    - Includes device chains with indices and types
+    - Machine-readable for Claude Code integration
+    - Use -o/--output to save to file
 
     Use --smart to get prioritized recommendations based on your history:
     - Prioritizes fixes that have helped before
@@ -2579,6 +2606,8 @@ def diagnose_cmd(ctx, file: str, save: bool, verbose: bool, midi: bool,
         als-doctor diagnose "D:/Projects/MySong.als" --smart
         als-doctor diagnose "D:/Projects/MySong.als" --html
         als-doctor diagnose "D:/Projects/MySong.als" --html report.html
+        als-doctor diagnose "D:/Projects/MySong.als" --format json
+        als-doctor diagnose "D:/Projects/MySong.als" -f json -o analysis.json
     """
     fmt = ctx.obj.get('formatter', get_formatter())
     file_path = Path(file)
@@ -2586,6 +2615,40 @@ def diagnose_cmd(ctx, file: str, save: bool, verbose: bool, midi: bool,
     if file_path.suffix.lower() != '.als':
         fmt.error("File must be an Ableton Live Set (.als)")
         raise SystemExit(1)
+
+    # Handle JSON output format
+    if output_format == 'json':
+        result = _analyze_als_file_full(file_path, fmt)
+        if not result:
+            # Output error as JSON
+            import json as json_module
+            error_json = json_module.dumps({"success": False, "error": "Failed to analyze file"})
+            click.echo(error_json)
+            raise SystemExit(1)
+
+        scan_result, device_analysis = result
+
+        # Analyze MIDI if requested
+        midi_analysis = None
+        if midi:
+            midi_analysis = _analyze_midi(file_path, fmt)
+
+        # Create JSON output
+        json_output = create_json_output(
+            str(file_path),
+            scan_result,
+            device_analysis,
+            midi_analysis
+        )
+
+        # Output or save JSON
+        if output:
+            json_output.save(output)
+            click.echo(f"JSON saved to: {output}")
+        else:
+            click.echo(json_output.to_json())
+
+        return  # Exit early for JSON format
 
     fmt.print(f"Diagnosing: {file_path.name}")
     fmt.print("")

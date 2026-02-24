@@ -136,6 +136,38 @@ Prescriptive Fixes Generated:
     [Auto-Apply Available]
 ```
 
+## Implementation Status
+
+### Core Infrastructure (COMPLETE)
+
+The foundational coaching pipeline is now implemented in `projects/music-analyzer/src/live_control/`:
+
+| Component | File | Status |
+|-----------|------|--------|
+| Session State | `state.py` | Complete - undo/redo, A/B, persistence |
+| Device Resolver | `resolver.py` | Complete - name to index mapping |
+| Value Conversions | `conversions.py` | Complete - Hz/dB/ms/ratio/percent |
+| Reference Integration | `reference_integration.py` | Complete - gap analysis |
+| Error Handling | `errors.py` | Complete - recovery suggestions |
+| ALS JSON Output | `als_json_output.py` | Complete - structured analysis |
+
+### What's Working Now
+
+1. **ALS Doctor JSON** - `als_doctor diagnose project.als --format json`
+2. **DeviceResolver** - Load from ALS Doctor or MCP, fuzzy matching
+3. **Gap Analysis** - Compare user tracks to reference profiles
+4. **Session Persistence** - Changes survive conversation restarts
+5. **A/B Comparison** - Toggle between original and modified
+6. **Full Undo/Redo** - Complete change tracking
+7. **Error Recovery** - Graceful fallback to manual instructions
+
+### Integration Points Ready
+
+- Reference profiles load into gap analyzer
+- ALS Doctor output feeds DeviceResolver
+- MCP tools return JSON for reliable parsing
+- Session state tracks all parameter changes
+
 ## Next Steps
 
 1. **Review this plan** - Check if vision matches your goals

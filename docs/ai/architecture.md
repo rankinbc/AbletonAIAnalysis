@@ -33,11 +33,11 @@ Ableton AI Analysis is a comprehensive music production analysis tool designed f
 ┌────────────────────────────────────────────────────────────────────────┐
 │                           INPUT LAYER                                   │
 ├──────────────────┬────────────────────┬────────────────────────────────┤
-│ /inputs/<song>/  │   Manual CLI Args  │     Reference Library          │
-│ ├── mix/v1/      │   --audio, --stems │     (stored references)        │
-│ ├── stems/       │   --als, --ref     │                                │
-│ ├── references/  │                    │                                │
-│ └── project.als  │                    │                                │
+│   ALS Doctor     │   Manual CLI Args  │     Reference Library          │
+│   (direct .als)  │   --audio, --stems │     (stored references)        │
+│                  │   --als, --ref     │                                │
+│   SQLite DB      │                    │                                │
+│   data/projects  │                    │                                │
 └──────────────────┴────────────────────┴────────────────────────────────┘
                               │
                               ▼
@@ -102,37 +102,30 @@ projects/music-analyzer/
     ├── device_chain_analyzer.py # Deep .als device chain extraction
     ├── effect_chain_doctor.py  # Rules engine for mixing issues
     ├── project_differ.py       # Compare two .als versions
-    └── batch_scanner.py        # Scan & rank multiple projects
+    ├── batch_scanner.py        # Scan & rank multiple projects
+    │
+    │   # MIDI Extraction & Variation Generator
+    ├── midi_generator.py       # Generate MIDI variations (transpose, humanize, etc.)
+    └── midi_exporter.py        # Export MIDI clips to .mid files
 
 util/als-doctor.bat         # Windows batch wrapper
 ```
 
 ---
 
-## Standard Input Structure
+## Data Storage (SQLite)
 
-Songs ready for analysis live in `/inputs/<songname>/`:
+All analysis data is persisted in SQLite at `data/projects.db`:
 
 ```
-/inputs/
-  └── <songname>/
-      ├── info.json                 # Optional: Song metadata
-      ├── project.als               # Optional: Ableton project file
-      ├── mix/                      # Full mix exports (version subfolders)
-      │   ├── v1/
-      │   │   └── mix.flac          # Version 1 mixdown
-      │   ├── v2/
-      │   │   └── mix.flac          # Version 2 (current)
-      │   └── ...
-      ├── stems/                    # Individual track exports
-      │   ├── kick.wav
-      │   ├── bass.wav
-      │   └── ...
-      ├── midi/                     # Optional: MIDI files
-      │   └── *.mid
-      └── references/               # Optional: Reference tracks
-          └── reference.wav
+data/
+  └── projects.db              # Main project database
+      ├── projects             # Unique songs (by folder path)
+      ├── versions             # Individual .als files with health scores
+      └── issues               # Detected problems per version
 ```
+
+Projects are analyzed **in place** from their original Ableton project folders - no file copying required. The database tracks original file paths.
 
 ---
 
@@ -204,18 +197,19 @@ ANALYZER_DYNAMICS_TARGET_CREST_FACTOR=10
 ## CLI Options
 
 ```bash
-# Standard analysis from /inputs/<song>/
-python analyze.py --song MySong
-python analyze.py --song MySong --version v2
+# ALS Doctor - Analyze Ableton projects directly (recommended)
+python als_doctor.py diagnose path/to/project.als
+python als_doctor.py diagnose project.als --format json
+python als_doctor.py scan "D:/Music/Projects/Ableton"
 
-# Manual paths
+# Audio analysis
 python analyze.py --audio mix.wav
 python analyze.py --audio mix.wav --stems ./stems/
 python analyze.py --als project.als --stems ./stems/ --audio mix.wav
 
 # Reference comparison
 python analyze.py --audio mix.wav --compare-ref reference.wav
-python analyze.py --song MySong --reference-id stored_ref_001
+python analyze.py --audio mix.wav --reference-id stored_ref_001
 
 # Reference library management
 python analyze.py --add-reference pro_track.wav --genre trance --tags "uplifting,anthem"
@@ -228,12 +222,12 @@ python analyze.py --audio mix.wav --reference ref.wav --master
 python analyze.py --separate mix.wav
 
 # Configuration
-python analyze.py --song MySong --config custom_config.yaml
-python analyze.py --song MySong --no-sections --no-stems --no-midi
+python analyze.py --audio mix.wav --config custom_config.yaml
+python analyze.py --audio mix.wav --no-sections --no-stems
 
 # Output options
-python analyze.py --song MySong --output ./my_reports --format json
-python analyze.py --song MySong -v  # Verbose
+python analyze.py --audio mix.wav --output ./my_reports --format json
+python analyze.py --audio mix.wav -v  # Verbose
 ```
 
 ---

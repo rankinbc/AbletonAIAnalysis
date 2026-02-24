@@ -325,32 +325,6 @@ Compare two .als versions:
 
 ---
 
-## Standard Input Structure
-
-Songs ready for analysis live in `/inputs/<songname>/`:
-
-```
-/inputs/
-  └── <songname>/
-      ├── info.json                 # Optional: Song metadata
-      ├── project.als               # Optional: Ableton project file
-      ├── mix/                      # Full mix exports
-      │   ├── v1/
-      │   │   └── mix.flac
-      │   └── v2/
-      │       └── mix.flac
-      ├── stems/                    # Individual track exports
-      │   ├── kick.wav
-      │   ├── bass.wav
-      │   └── ...
-      ├── midi/                     # Optional: MIDI files
-      └── references/               # Optional: Reference tracks
-```
-
-Reports are saved to `/reports/<songname>/<songname>_<version>_analysis_<date>.html`
-
----
-
 ## Trance-Specific Features
 
 This toolkit is optimized for trance production:
@@ -384,6 +358,5 @@ SQLite database stores all analysis data:
 | Music Analyzer | `projects/music-analyzer/` |
 | YouTube Analyzer | `projects/youtube-reference-track-analysis/` |
 | Analysis Reports | `reports/<songname>/` |
-| Song Inputs | `inputs/<songname>/` |
 | Database | `data/projects.db` |
 | References | `references/` |

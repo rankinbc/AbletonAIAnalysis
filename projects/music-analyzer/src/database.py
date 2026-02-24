@@ -202,6 +202,31 @@ CREATE TABLE IF NOT EXISTS user_activity (
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
+-- Arrangement scores table: stores arrangement analysis against trance conventions
+CREATE TABLE IF NOT EXISTS arrangement_scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_id INTEGER UNIQUE,
+    overall_score REAL,
+    grade TEXT,
+    structure_score REAL,
+    length_score REAL,
+    eight_bar_score REAL,
+    energy_contrast_score REAL,
+    flow_score REAL,
+    total_bars INTEGER,
+    section_count INTEGER,
+    detected_tempo REAL,
+    has_intro INTEGER DEFAULT 0,
+    has_buildup INTEGER DEFAULT 0,
+    has_drop INTEGER DEFAULT 0,
+    has_breakdown INTEGER DEFAULT 0,
+    has_outro INTEGER DEFAULT 0,
+    energy_contrast_db REAL,
+    issues_json TEXT,
+    analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (version_id) REFERENCES versions(id) ON DELETE CASCADE
+);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_versions_project_id ON versions(project_id);
 CREATE INDEX IF NOT EXISTS idx_versions_als_path ON versions(als_path);
@@ -216,6 +241,8 @@ CREATE INDEX IF NOT EXISTS idx_reference_comparisons_project_id ON reference_com
 CREATE INDEX IF NOT EXISTS idx_reference_stem_comparisons_comparison_id ON reference_stem_comparisons(comparison_id);
 CREATE INDEX IF NOT EXISTS idx_user_activity_project_id ON user_activity(project_id);
 CREATE INDEX IF NOT EXISTS idx_user_activity_worked_at ON user_activity(worked_at);
+CREATE INDEX IF NOT EXISTS idx_arrangement_scores_version_id ON arrangement_scores(version_id);
+CREATE INDEX IF NOT EXISTS idx_arrangement_scores_overall_score ON arrangement_scores(overall_score);
 """
 
 
@@ -3257,6 +3284,200 @@ def get_midi_stats(
 
     except Exception as e:
         return (None, f"Failed to get MIDI stats: {e}")
+
+
+# ==================== ARRANGEMENT SCORE PERSISTENCE ====================
+
+
+@dataclass
+class ArrangementScoreRecord:
+    """Arrangement analysis score to persist."""
+    version_id: int
+    overall_score: float
+    grade: str
+    structure_score: float
+    length_score: float
+    eight_bar_score: float
+    energy_contrast_score: float
+    flow_score: float
+    total_bars: int
+    section_count: int
+    detected_tempo: float
+    has_intro: bool
+    has_buildup: bool
+    has_drop: bool
+    has_breakdown: bool
+    has_outro: bool
+    energy_contrast_db: Optional[float]
+    issues_json: str  # JSON string of issues list
+
+
+def persist_arrangement_score(
+    score: ArrangementScoreRecord,
+    db_path: Optional[Path] = None
+) -> Tuple[bool, str]:
+    """
+    Persist arrangement analysis score to the database.
+
+    Uses upsert semantics - if score already exists for this version, it is updated.
+
+    Args:
+        score: ArrangementScoreRecord object with analysis data
+        db_path: Optional custom path for the database
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return (False, "Database not initialized. Run 'als-doctor db init' first.")
+
+    try:
+        with db.connection() as conn:
+            # Check if score already exists for this version
+            cursor = conn.execute(
+                "SELECT id FROM arrangement_scores WHERE version_id = ?",
+                (score.version_id,)
+            )
+            existing = cursor.fetchone()
+
+            if existing:
+                # Update existing
+                conn.execute(
+                    """UPDATE arrangement_scores SET
+                        overall_score = ?,
+                        grade = ?,
+                        structure_score = ?,
+                        length_score = ?,
+                        eight_bar_score = ?,
+                        energy_contrast_score = ?,
+                        flow_score = ?,
+                        total_bars = ?,
+                        section_count = ?,
+                        detected_tempo = ?,
+                        has_intro = ?,
+                        has_buildup = ?,
+                        has_drop = ?,
+                        has_breakdown = ?,
+                        has_outro = ?,
+                        energy_contrast_db = ?,
+                        issues_json = ?,
+                        analyzed_at = CURRENT_TIMESTAMP
+                    WHERE version_id = ?""",
+                    (
+                        score.overall_score,
+                        score.grade,
+                        score.structure_score,
+                        score.length_score,
+                        score.eight_bar_score,
+                        score.energy_contrast_score,
+                        score.flow_score,
+                        score.total_bars,
+                        score.section_count,
+                        score.detected_tempo,
+                        1 if score.has_intro else 0,
+                        1 if score.has_buildup else 0,
+                        1 if score.has_drop else 0,
+                        1 if score.has_breakdown else 0,
+                        1 if score.has_outro else 0,
+                        score.energy_contrast_db,
+                        score.issues_json,
+                        score.version_id
+                    )
+                )
+                return (True, "Arrangement score updated")
+            else:
+                # Insert new
+                conn.execute(
+                    """INSERT INTO arrangement_scores (
+                        version_id, overall_score, grade,
+                        structure_score, length_score, eight_bar_score,
+                        energy_contrast_score, flow_score,
+                        total_bars, section_count, detected_tempo,
+                        has_intro, has_buildup, has_drop, has_breakdown, has_outro,
+                        energy_contrast_db, issues_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        score.version_id,
+                        score.overall_score,
+                        score.grade,
+                        score.structure_score,
+                        score.length_score,
+                        score.eight_bar_score,
+                        score.energy_contrast_score,
+                        score.flow_score,
+                        score.total_bars,
+                        score.section_count,
+                        score.detected_tempo,
+                        1 if score.has_intro else 0,
+                        1 if score.has_buildup else 0,
+                        1 if score.has_drop else 0,
+                        1 if score.has_breakdown else 0,
+                        1 if score.has_outro else 0,
+                        score.energy_contrast_db,
+                        score.issues_json
+                    )
+                )
+                return (True, "Arrangement score saved")
+
+    except Exception as e:
+        return (False, f"Failed to persist arrangement score: {e}")
+
+
+def get_arrangement_score(
+    version_id: int,
+    db_path: Optional[Path] = None
+) -> Tuple[Optional[ArrangementScoreRecord], str]:
+    """
+    Get arrangement score for a specific version.
+
+    Args:
+        version_id: Version ID to look up
+        db_path: Optional custom path for the database
+
+    Returns:
+        Tuple of (ArrangementScoreRecord or None, message)
+    """
+    db = Database(db_path)
+
+    if not db.is_initialized():
+        return (None, "Database not initialized. Run 'als-doctor db init' first.")
+
+    try:
+        with db.connection() as conn:
+            cursor = conn.execute(
+                """SELECT * FROM arrangement_scores WHERE version_id = ?""",
+                (version_id,)
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                return (None, f"No arrangement score found for version {version_id}")
+
+            return (ArrangementScoreRecord(
+                version_id=row['version_id'],
+                overall_score=row['overall_score'],
+                grade=row['grade'],
+                structure_score=row['structure_score'],
+                length_score=row['length_score'],
+                eight_bar_score=row['eight_bar_score'],
+                energy_contrast_score=row['energy_contrast_score'],
+                flow_score=row['flow_score'],
+                total_bars=row['total_bars'],
+                section_count=row['section_count'],
+                detected_tempo=row['detected_tempo'],
+                has_intro=bool(row['has_intro']),
+                has_buildup=bool(row['has_buildup']),
+                has_drop=bool(row['has_drop']),
+                has_breakdown=bool(row['has_breakdown']),
+                has_outro=bool(row['has_outro']),
+                energy_contrast_db=row['energy_contrast_db'],
+                issues_json=row['issues_json']
+            ), "OK")
+
+    except Exception as e:
+        return (None, f"Failed to get arrangement score: {e}")
 
 
 # ==================== STYLE PROFILE ====================

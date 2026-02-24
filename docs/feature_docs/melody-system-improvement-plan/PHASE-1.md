@@ -442,60 +442,122 @@ print(f"Composite improvement: {report.composite_improvement:+.1%}")
 
 ---
 
-## Step 1.7 — Wire the Complete Hybrid Pipeline (End-to-End)
+## Step 1.7 — Wire the Complete Hybrid Pipeline (End-to-End) ✅ IMPLEMENTED
 
 **Duration:** 3–4 days
+**Status:** Complete — `HybridPipeline` in `melody_generation/integration.py` + CLI in `generate.py`
 
 ### What and Why
 
 Connect all Phase 1 components into a single callable pipeline. After this step, you have a generation pipeline that takes musical parameters as input → generates multiple candidates using both rules and ML → validates and scores all → returns the best as MIDI.
 
-### Tasks
+### Implementation
 
-- [ ] Build the full pipeline flow:
-  1. Input parameters: key, BPM, chord_progression, energy_curve, bar_count
-  2. Rule engine generates structural template
-  3. Improv RNN generates 3–5 melody candidates conditioned on chords
-  4. MusicVAE creates 2–3 variations of each candidate
-  5. music21 filters all candidates against scale/key/interval constraints
-  6. Evaluation framework scores survivors
-  7. Top candidate output as MIDI
-- [ ] Implement candidate ranking: weighted composite score
-- [ ] Add logging: all candidates, scores, selection rationale (training signal for later)
-- [ ] End-to-end test: generate 50 melodies, compare against reference corpus and rule-only baseline
-- [ ] Create CLI: `python generate.py --key Am --bpm 140 --chords "Am F C G" --bars 16`
+**Files:**
+- `projects/ableton-generators/melody_generation/integration.py` — `HybridPipeline` class
+- `projects/ableton-generators/generate.py` — CLI entry point
 
-### Implementation Notes
+#### HybridPipeline
+
+End-to-end pipeline that orchestrates all Phase 1 components:
+
+1. **Parse chord progression** via HarmonicEngine
+2. **Generate arp** (always rule-based, ArpGenerator)
+3. **Generate rule-based lead** (LeadGenerator) → score with evaluation framework
+4. **Generate ML candidates** (Improv RNN via DockerMagenta, if available)
+5. **Create MusicVAE variations** of the best candidate so far (if available)
+6. **Score ALL candidates** with `evaluate_melody()` including chord-tone analysis
+7. **Select best** by composite score
+8. **Humanize** winner + arp, export MIDI + generation log
+
+Graceful fallback: if Docker/Magenta is unavailable, the pipeline runs rule-only without errors.
+
+**Data classes:**
+- `HybridResult` — winner lead + arp + all scored candidates + generation log
+- `ScoredCandidate` — notes + metrics + source label + scale compliance
 
 ```python
-from pipeline import MelodyPipeline
+from melody_generation.integration import HybridPipeline
 
-pipeline = MelodyPipeline(
-    magenta_service_url="http://localhost:5050",
-    tokenizer_config="tokenizer.json",
-    reference_stats="reference_stats.json",
+pipeline = HybridPipeline(
+    key="A", scale="minor", tempo=140, genre="trance",
+    reference_stats_path="evaluation/reference_stats.json",  # optional
 )
 
+# Single generation
 result = pipeline.generate(
-    key="Am",
-    bpm=140,
-    chord_progression=["Am", "F", "C", "G"],
+    chords=["Am", "F", "C", "G"],
     bars=16,
-    num_candidates=10,
+    energy=0.9,
+    num_ml_candidates=5,     # 0 = rule-only
+    num_variations=2,        # MusicVAE variations
     temperature=1.0,
-    variation_intensity=0.3,
 )
+print(f"Winner: {result.lead_source} ({result.lead_metrics.composite:.3f})")
+print(f"Candidates: {len(result.all_candidates)}")
 
-print(f"Selected melody: {result.midi_path}")
-print(f"Composite score: {result.score:.3f}")
-print(f"Candidates evaluated: {result.num_evaluated}")
-result.save_log("generation_logs/")
+# Batch for baseline recording
+results = pipeline.generate_batch(n=50)
+```
+
+#### CLI (`generate.py`)
+
+```bash
+# Rule-only generation
+python generate.py --key A --bpm 140 --chords "Am F C G" --bars 16
+
+# Hybrid with ML candidates
+python generate.py --ml-candidates 5 --variations 2 --verbose --scorecard
+
+# Batch for baseline recording
+python generate.py --batch 50 --output evaluation/baselines --baseline-label phase1
+
+# Different section types
+python generate.py --section breakdown --energy 0.5 --bars 8
+```
+
+CLI flags:
+- `--key`, `--scale`, `--bpm`, `--chords`, `--section`, `--bars`, `--energy` — musical parameters
+- `--ml-candidates N` — number of Improv RNN candidates (0 = rule-only)
+- `--variations N` — MusicVAE variations per candidate
+- `--temperature` — ML sampling temperature
+- `--batch N` — generate N melodies, save as baseline JSON
+- `--reference-stats PATH` — reference corpus for better KL scoring
+- `--verbose`, `--scorecard` — detailed output
+
+#### Generation Log
+
+Every generation saves a JSON log capturing all candidate scores:
+
+```json
+{
+  "lead_source": "rule_engine",
+  "lead_score": 0.404,
+  "lead_notes": 26,
+  "num_candidates": 1,
+  "generation_time_s": 0.12,
+  "candidates": [
+    {
+      "source": "rule_engine",
+      "composite": 0.404,
+      "scale_compliance": 1.0,
+      "num_notes": 26,
+      "pitch_entropy": 3.562,
+      "chord_tone_ratio": 0.577,
+      "stepwise_motion": 0.64
+    }
+  ]
+}
 ```
 
 ### Success Criteria
 
-- Single CLI command generates a trance melody end-to-end
-- Generated melodies score higher on composite metric than rule-only baseline
-- Pipeline runs in <10 seconds on CPU
-- Generation logs capture full candidate evaluation data
-- **Phase 1 Gate:** Run human listening test (10 melodies, A/B vs. rule-only). Proceed to Phase 2 if hybrid wins >60% of blind comparisons
+- [x] Single CLI command generates a trance melody end-to-end
+- [x] Pipeline runs in <1 second on CPU (rule-only mode)
+- [x] Generation logs capture full candidate evaluation data
+- [x] Batch generation with baseline JSON export
+- [x] Graceful fallback when Docker/Magenta unavailable
+- [x] `HybridResult` with all candidates, metrics, and timing
+- [x] Evaluation scorecard output (--scorecard flag)
+- [ ] **Phase 1 Gate:** Human listening test (10 melodies, A/B vs. rule-only, requires Docker + reference corpus)
+- [ ] ML candidates beat rule-only on composite score (requires Docker + Magenta image)

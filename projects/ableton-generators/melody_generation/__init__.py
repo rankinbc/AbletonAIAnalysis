@@ -177,6 +177,9 @@ from .integration import (
     GenerationResult,
     generate_melody,
     generate_arp as generate_arp_track,
+    HybridPipeline,
+    HybridResult,
+    ScoredCandidate,
 )
 
 # Tokenizer (Step 1.3)
@@ -359,6 +362,9 @@ __all__ = [
     "GenerationResult",
     "generate_melody",
     "generate_arp_track",
+    "HybridPipeline",
+    "HybridResult",
+    "ScoredCandidate",
 
     # Tokenizer
     "get_tokenizer",

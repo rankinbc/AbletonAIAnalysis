@@ -8,13 +8,21 @@ Production-grade harmonic analysis and chord processing:
 - Tension analysis and resolution suggestions
 - Common tone detection
 - Modal context awareness
+- Key detection (Krumhansl-Schmuckler via music21)
+- Non-chord-tone classification (passing, neighbor, suspension, appoggiatura)
+- Interval consonance/dissonance scoring
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+
+from music21 import scale as m21scale
+from music21 import pitch as m21pitch
+from music21 import interval as m21interval
+from music21 import key as m21key
 
 from .models import (
     Chord, ChordQuality, ChordEvent, ChordTemplate,
@@ -24,37 +32,94 @@ from .models import (
 
 
 # =============================================================================
-# SCALE DEFINITIONS
+# MUSIC21-BACKED SCALE SYSTEM
 # =============================================================================
 
-SCALE_INTERVALS: Dict[str, Tuple[int, ...]] = {
-    # Diatonic modes
-    "major": (0, 2, 4, 5, 7, 9, 11),
-    "ionian": (0, 2, 4, 5, 7, 9, 11),
-    "dorian": (0, 2, 3, 5, 7, 9, 10),
-    "phrygian": (0, 1, 3, 5, 7, 8, 10),
-    "lydian": (0, 2, 4, 6, 7, 9, 11),
-    "mixolydian": (0, 2, 4, 5, 7, 9, 10),
-    "minor": (0, 2, 3, 5, 7, 8, 10),
-    "aeolian": (0, 2, 3, 5, 7, 8, 10),
-    "locrian": (0, 1, 3, 5, 6, 8, 10),
+def _m21_pitch_name(pc: PitchClass) -> str:
+    """Convert our PitchClass to a music21-compatible pitch name."""
+    # music21 prefers flats for certain pitch classes to avoid double-sharps
+    return pc.to_name(prefer_flat=False)
 
-    # Harmonic and melodic minor
-    "harmonic_minor": (0, 2, 3, 5, 7, 8, 11),
-    "melodic_minor": (0, 2, 3, 5, 7, 9, 11),
 
-    # Pentatonic
+def _build_scale_object(tonic_name: str, scale_name: str) -> m21scale.ConcreteScale:
+    """Build a music21 scale object from tonic name and scale type string."""
+    _SCALE_CLASSES: Dict[str, type] = {
+        "major": m21scale.MajorScale,
+        "ionian": m21scale.MajorScale,
+        "minor": m21scale.MinorScale,
+        "aeolian": m21scale.MinorScale,
+        "dorian": m21scale.DorianScale,
+        "phrygian": m21scale.PhrygianScale,
+        "lydian": m21scale.LydianScale,
+        "mixolydian": m21scale.MixolydianScale,
+        "locrian": m21scale.LocrianScale,
+        "harmonic_minor": m21scale.HarmonicMinorScale,
+        "melodic_minor": m21scale.MelodicMinorScale,
+        "whole_tone": m21scale.WholeToneScale,
+        "chromatic": m21scale.ChromaticScale,
+    }
+    cls = _SCALE_CLASSES.get(scale_name)
+    if cls is not None:
+        return cls(m21pitch.Pitch(tonic_name))
+    # Pentatonic, blues, diminished, augmented — not natively in music21 as
+    # named classes; fall back to the legacy interval tuples.
+    return None
+
+
+def _intervals_from_m21_scale(sc: m21scale.ConcreteScale) -> Tuple[int, ...]:
+    """Extract semitone intervals (relative to tonic) from a music21 scale."""
+    # Use octave-qualified pitches to ensure getPitches returns the full span
+    tonic_oct = m21pitch.Pitch(sc.tonic.name + '4')
+    upper_oct = m21pitch.Pitch(sc.tonic.name + '5')
+    tonic_midi = tonic_oct.midi
+    pitches = sc.getPitches(tonic_oct, upper_oct)
+    # Exclude the upper octave duplicate
+    intervals = []
+    for p in pitches:
+        semitones = p.midi - tonic_midi
+        if 0 <= semitones < 12:
+            intervals.append(semitones)
+    return tuple(sorted(set(intervals)))
+
+
+# Legacy fallback for scales music21 doesn't provide named classes for
+_LEGACY_SCALE_INTERVALS: Dict[str, Tuple[int, ...]] = {
     "major_pentatonic": (0, 2, 4, 7, 9),
     "minor_pentatonic": (0, 3, 5, 7, 10),
-
-    # Blues
     "blues": (0, 3, 5, 6, 7, 10),
-
-    # Exotic
-    "whole_tone": (0, 2, 4, 6, 8, 10),
-    "diminished": (0, 2, 3, 5, 6, 8, 9, 11),  # Half-whole
+    "diminished": (0, 2, 3, 5, 6, 8, 9, 11),
     "augmented": (0, 3, 4, 7, 8, 11),
 }
+
+
+def get_scale_intervals(tonic_name: str, scale_name: str) -> Tuple[int, ...]:
+    """
+    Get semitone intervals for any scale type.
+
+    Uses music21 for all standard scales, falls back to hardcoded tuples
+    only for exotic scales that music21 doesn't natively support.
+    """
+    sc = _build_scale_object(tonic_name, scale_name)
+    if sc is not None:
+        return _intervals_from_m21_scale(sc)
+    # Fallback for exotic scales
+    if scale_name in _LEGACY_SCALE_INTERVALS:
+        return _LEGACY_SCALE_INTERVALS[scale_name]
+    # Unknown scale — default to natural minor
+    return _intervals_from_m21_scale(m21scale.MinorScale(m21pitch.Pitch(tonic_name)))
+
+
+# Backwards-compatible constant: pre-computed intervals for all supported
+# scales rooted on C. Downstream code that imports SCALE_INTERVALS will
+# continue to work, but new code should use get_scale_intervals() instead.
+SCALE_INTERVALS: Dict[str, Tuple[int, ...]] = {}
+for _name in [
+    "major", "ionian", "dorian", "phrygian", "lydian", "mixolydian",
+    "minor", "aeolian", "locrian", "harmonic_minor", "melodic_minor",
+    "major_pentatonic", "minor_pentatonic", "blues", "whole_tone",
+    "diminished", "augmented",
+]:
+    SCALE_INTERVALS[_name] = get_scale_intervals("C", _name)
 
 
 # Diatonic chord functions by scale degree (1-indexed)
@@ -240,6 +305,9 @@ class HarmonicEngine:
     - Voice leading computation
     - Tension/resolution analysis
     - Scale/mode context
+    - Key detection (Krumhansl-Schmuckler via music21)
+    - Non-chord-tone classification
+    - Interval consonance/dissonance scoring
     """
 
     def __init__(
@@ -249,7 +317,13 @@ class HarmonicEngine:
     ):
         self.key = key
         self.scale = scale
-        self.scale_intervals = SCALE_INTERVALS.get(scale, SCALE_INTERVALS["minor"])
+
+        # Build music21 scale object (if available for this scale type)
+        tonic_name = _m21_pitch_name(key)
+        self._m21_scale = _build_scale_object(tonic_name, scale)
+
+        # Compute intervals — music21-backed when possible, legacy fallback otherwise
+        self.scale_intervals = get_scale_intervals(tonic_name, scale)
         self._build_scale_notes()
         self._build_diatonic_chords()
 
@@ -267,6 +341,123 @@ class HarmonicEngine:
             note.value: i + 1
             for i, note in enumerate(self.scale_notes)
         }
+
+    def get_scale_degree(self, pitch_class: PitchClass) -> Optional[int]:
+        """
+        Get the scale degree (1-indexed) of a pitch class, or None if chromatic.
+
+        Uses music21 when available for accurate enharmonic handling.
+        """
+        if self._m21_scale is not None:
+            m21p = m21pitch.Pitch(pitch_class.to_name())
+            degree = self._m21_scale.getScaleDegreeFromPitch(m21p)
+            return degree  # Returns None if not in scale
+        # Fallback
+        return self.diatonic_roots.get(pitch_class.value)
+
+    def is_in_scale(self, pitch_class: PitchClass) -> bool:
+        """Check if a pitch class belongs to the current scale."""
+        return self.get_scale_degree(pitch_class) is not None
+
+    def classify_interval(self, p1: Pitch, p2: Pitch) -> dict:
+        """
+        Classify the interval between two pitches using music21.
+
+        Returns dict with:
+            name: e.g. 'M3', 'P5', 'A4'
+            semitones: integer distance
+            is_consonant: bool
+            quality: 'perfect', 'major', 'minor', 'augmented', 'diminished'
+        """
+        m21p1 = m21pitch.Pitch(p1.to_name())
+        m21p2 = m21pitch.Pitch(p2.to_name())
+        ivl = m21interval.Interval(m21p1, m21p2)
+        return {
+            "name": ivl.directedName,
+            "simple_name": ivl.directedSimpleName,
+            "semitones": ivl.semitones,
+            "is_consonant": ivl.isConsonant(),
+            "quality": ivl.specifier if hasattr(ivl, 'specifier') else None,
+        }
+
+    def classify_non_chord_tone(
+        self,
+        note: NoteEvent,
+        prev_note: Optional[NoteEvent],
+        next_note: Optional[NoteEvent],
+        chord: Chord,
+    ) -> str:
+        """
+        Classify a non-chord tone by its melodic context.
+
+        Returns one of:
+            'chord_tone', 'passing', 'neighbor', 'suspension',
+            'appoggiatura', 'escape', 'anticipation', 'chromatic'
+        """
+        pc = note.pitch.pitch_class
+        if chord.contains_pitch(pc):
+            return "chord_tone"
+
+        prev_midi = prev_note.pitch.midi_note if prev_note else None
+        next_midi = next_note.pitch.midi_note if next_note else None
+        curr_midi = note.pitch.midi_note
+
+        # Need both neighbors for passing/neighbor classification
+        if prev_midi is not None and next_midi is not None:
+            prev_step = curr_midi - prev_midi
+            next_step = next_midi - curr_midi
+
+            # Passing tone: stepwise approach AND departure in same direction
+            if (abs(prev_step) <= 2 and abs(next_step) <= 2
+                    and prev_step != 0 and next_step != 0
+                    and (prev_step > 0) == (next_step > 0)):
+                return "passing"
+
+            # Neighbor tone: stepwise departure returning to original pitch area
+            if (abs(prev_step) <= 2 and abs(next_step) <= 2
+                    and prev_step != 0 and next_step != 0
+                    and (prev_step > 0) != (next_step > 0)):
+                return "neighbor"
+
+            # Escape tone: stepwise approach, leap away
+            if abs(prev_step) <= 2 and abs(next_step) > 2:
+                return "escape"
+
+        # Appoggiatura: leap to, stepwise resolution
+        if prev_midi is not None and next_midi is not None:
+            if abs(prev_midi - curr_midi) > 2 and abs(next_midi - curr_midi) <= 2:
+                if next_note and chord.contains_pitch(next_note.pitch.pitch_class):
+                    return "appoggiatura"
+
+        # Anticipation: same pitch as next chord tone, short duration
+        if next_note and next_note.pitch.pitch_class == pc:
+            return "anticipation"
+
+        # Suspension: held from previous, resolves down by step
+        if prev_note and prev_note.pitch.pitch_class == pc:
+            if next_midi is not None and (curr_midi - next_midi) in (1, 2):
+                return "suspension"
+
+        # Check if it's at least a scale tone
+        if self.is_in_scale(pc):
+            return "passing"  # Default for in-scale NCTs without clear context
+
+        return "chromatic"
+
+    @staticmethod
+    def detect_key(midi_path: str) -> Optional[str]:
+        """
+        Detect the key of a MIDI file using Krumhansl-Schmuckler algorithm.
+
+        Returns a string like 'A minor' or 'C major', or None on failure.
+        """
+        try:
+            from music21 import converter
+            score = converter.parse(midi_path)
+            result = score.analyze('key')
+            return str(result)
+        except Exception:
+            return None
 
     def parse_chord(self, symbol: str) -> Chord:
         """Parse a chord symbol."""
@@ -473,18 +664,23 @@ class HarmonicEngine:
 
         return approaches
 
+    @property
+    def scale_pitch_classes(self) -> FrozenSet[int]:
+        """Get frozenset of pitch-class integers (0-11) in the current scale."""
+        return frozenset(pc.value for pc in self.scale_notes)
+
     def tension_of_pitch_in_context(
         self,
         pitch: Pitch,
         chord: Chord,
     ) -> TensionLevel:
         """Get tension level of a pitch against chord and scale."""
-        # Check if chord tone
+        # Check if chord tone — pass real scale context for accurate fallback
         if chord.contains_pitch(pitch.pitch_class):
-            return chord.tension_of_pitch(pitch.pitch_class)
+            return chord.tension_of_pitch(pitch.pitch_class, self.scale_pitch_classes)
 
-        # Check if scale tone
-        if pitch.pitch_class in self.scale_notes:
+        # Check if scale tone (using music21-backed membership when available)
+        if self.is_in_scale(pitch.pitch_class):
             return TensionLevel.MODERATE
 
         # Chromatic

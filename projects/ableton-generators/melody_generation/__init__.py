@@ -94,6 +94,7 @@ from .harmonic_engine import (
     VoiceLeadingResult,
     parse_chord,
     parse_progression,
+    get_scale_intervals,
     SCALE_INTERVALS,
 )
 
@@ -253,6 +254,7 @@ __all__ = [
     "VoiceLeadingResult",
     "parse_chord",
     "parse_progression",
+    "get_scale_intervals",
     "SCALE_INTERVALS",
 
     # Motif

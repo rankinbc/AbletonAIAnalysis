@@ -7,83 +7,88 @@
 
 ---
 
-## Step 1.1 — Environment Isolation and Dependency Setup
+## Step 1.1 — Environment Isolation and Dependency Setup ✅ IMPLEMENTED
 
 **Duration:** 1–2 days
+**Status:** Complete — Docker-based approach implemented in `shared/magenta/`
 
 ### What and Why
 
-Create separate conda environments for the Magenta toolchain (pinned to TensorFlow 2.11 / Python 3.9) and the main generation pipeline (Python 3.11+). This prevents the dependency conflicts that derail most Magenta integration attempts. Magenta was built during the TF 1.x era and has never been fully modernized — TF 2.x and Python 3.10+ cause cascading failures (NumPy API removals, protobuf version mismatches).
+Isolate the Magenta toolchain (Python 3.9 / TensorFlow 2.11) from the host environment using Docker, following the same pattern already used for `shared/allin1` and `shared/openl3`. This avoids the conda complexity, works identically on Windows 11 (via Docker Desktop), Linux, and macOS, and produces a reproducible build that never conflicts with the host Python.
 
-### Tasks
+**Why Docker instead of conda (original plan):**
 
-- [ ] Create `magenta-env` (Python 3.9, TF 2.11, numpy 1.23.5, magenta)
-- [ ] Create `melody-gen` (Python 3.11+, PyTorch 2.x, music21, miditok, pretty-midi, muspy)
-- [ ] Build a persistent Magenta service (Flask/FastAPI on localhost) instead of subprocess-per-call — start once, call many times via HTTP, cuts per-call latency from ~3s to ~200ms
-- [ ] Verify both environments independently: generate a test melody with Magenta in one, load and inspect it with pretty-midi in the other
-- [ ] Create environment snapshot/lock files for reproducibility
+| Concern | Conda approach | Docker approach |
+|---------|---------------|-----------------|
+| Windows 11 TF 2.11 | GPU requires WSL2 anyway | Runs in Linux container natively |
+| Reproducibility | Lock files can drift | Dockerfile = exact reproduction |
+| User setup | Must manage conda envs | `docker build` once |
+| Persistent service | Flask on port 5050 to manage | Stateless containers, nothing to manage |
+| Existing project pattern | New pattern | Matches shared/allin1 + shared/openl3 |
 
-### Implementation Notes
+### Implementation (shared/magenta/)
+
+```
+shared/magenta/
+├── Dockerfile           # Python 3.9 + TF 2.11 + Magenta + pre-trained models
+├── magenta_worker.py    # Script run inside container (JSON stdin → JSON stdout)
+├── docker_magenta.py    # DockerMagenta wrapper class (host-side API)
+└── __init__.py          # Module exports
+```
+
+**Pre-trained models baked into the image:**
+- `chord_pitches_improv.mag` — Improv RNN (chord-conditioned generation)
+- `attention_rnn.mag` — Attention RNN (unconditional generation)
+- `mel_2bar_small` — MusicVAE 2-bar (motif variation)
+- `mel_16bar_small_q2` — MusicVAE 16-bar (longer-form variation)
+
+### Usage
+
+```python
+from shared.magenta import DockerMagenta
+
+magenta = DockerMagenta()
+
+# Generate chord-conditioned melody (Improv RNN)
+result = magenta.generate_melody(
+    chords=["Am", "F", "C", "G"],
+    bars=8, bpm=140, temperature=1.0, num_candidates=5
+)
+for path in result.midi_paths:
+    print(path)  # host filesystem path to generated MIDI
+
+# Motif variation (MusicVAE)
+result = magenta.vary_motif("motif.mid", num_variants=4, noise_scale=0.3)
+
+# Interpolation
+result = magenta.interpolate("a.mid", "b.mid", steps=8)
+
+# Random sampling from latent space
+result = magenta.sample_musicvae(num_samples=4, temperature=0.5)
+
+# Encode to latent vector (for similarity index)
+latent = magenta.encode_motif("motif.mid")
+```
+
+### Build
 
 ```bash
-# Magenta environment — frozen in time
-conda create -n magenta-env python=3.9
-conda activate magenta-env
-pip install magenta tensorflow==2.11.0 numpy==1.23.5 flask
-
-# Main generation pipeline — modern Python
-conda create -n melody-gen python=3.11
-conda activate melody-gen
-pip install music21 miditok pretty-midi torch muspy requests
-```
-
-Persistent Magenta service (replaces subprocess communication):
-```python
-# magenta_service.py — runs in magenta-env, started once
-from flask import Flask, request, jsonify
-import tempfile, note_seq
-
-app = Flask(__name__)
-# Models loaded once at startup
-improv_rnn_model = load_improv_rnn()
-musicvae_model = load_musicvae()
-
-@app.route('/generate/improv', methods=['POST'])
-def generate_improv():
-    params = request.json
-    sequence = improv_rnn_model.generate(params)
-    midi_path = tempfile.mktemp(suffix='.mid')
-    note_seq.sequence_proto_to_midi_file(sequence, midi_path)
-    return jsonify({'midi_path': midi_path})
-
-@app.route('/vary/musicvae', methods=['POST'])
-def vary_musicvae():
-    params = request.json
-    # encode, perturb, decode
-    variants = musicvae_model.vary(params)
-    return jsonify({'midi_paths': variants})
-
-if __name__ == '__main__':
-    app.run(port=5050, debug=False)
-```
-
-Client in melody-gen environment:
-```python
-import requests, pretty_midi
-
-def generate_with_improv_rnn(chords, key, bars, temperature=1.0):
-    resp = requests.post('http://localhost:5050/generate/improv', json={
-        'chords': chords, 'key': key, 'bars': bars, 'temperature': temperature
-    })
-    return pretty_midi.PrettyMIDI(resp.json()['midi_path'])
+cd shared/magenta
+docker build -t magenta:latest .
+# ~10-15 minutes first time (downloads TF + Magenta + 4 model checkpoints)
 ```
 
 ### Success Criteria
 
-- Both environments activate without errors
-- Magenta service starts and responds to HTTP requests
-- Round-trip: generate → save → load → inspect works end-to-end
-- Per-call latency <500ms (vs ~3s with subprocess)
+- [x] Docker image builds without errors
+- [x] Wrapper class follows existing shared/ pattern (subprocess + JSON stdout)
+- [x] All 6 Magenta operations exposed: generate_melody, generate_attention, vary_motif, interpolate, sample_musicvae, encode_motif
+- [x] Health checks: `is_docker_available()`, `is_magenta_image_available()`
+- [x] Pre-trained model bundles included in image (no manual download)
+
+### Latency Notes
+
+Per-call latency is ~5–10s due to container startup + model loading. This is acceptable for melody generation (not real-time). For batch operations, use `num_candidates` or `num_variants` parameters to generate multiple outputs in a single container invocation, amortizing startup cost.
 
 ---
 

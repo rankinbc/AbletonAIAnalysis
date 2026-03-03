@@ -225,6 +225,90 @@ python ai_song_generator.py --preset uplifting_trance --name "Test" --dry-run
 
 ---
 
+## Dynamic MIDI Generator (NEW)
+
+Generate unique, varied MIDI every time. Each run produces significantly different results through randomization of melodic contours, rhythms, voicings, and ornaments.
+
+### Quick Start
+
+```bash
+cd C:\claude-workspace\AbletonAIAnalysis\projects\ableton-generators
+
+# Generate new variations (different each time!)
+python generate_dynamic.py
+
+# Embed into Ableton project
+python embed_custom_midi.py
+```
+
+### What Gets Randomized
+
+| Element | Variations |
+|---------|------------|
+| **Chord Voicings** | normal, spread, drop2, close, high |
+| **Arp Patterns** | up, down, updown, random, rhythmic |
+| **Arp Octaves** | 1 or 2 octave range |
+| **Lead Contour** | rising, falling, arch, wave |
+| **Ornaments** | 10-30% grace notes, neighbors, passing tones |
+| **Syncopation** | 10-40% rhythmic displacement |
+| **Octave Jumps** | 5-15% probability |
+| **Note Density** | Varies by section (sparse breakdowns, dense drops) |
+
+### Example Output
+
+```
+============================================================
+DYNAMIC MIDI GENERATOR
+Seed: 1772578442
+============================================================
+Generating dynamic chords...
+  Voicing style: drop2
+Generating dynamic bass...
+Generating dynamic arp...
+  Arp style: updown, octaves: 1
+Generating dynamic lead...
+  Contour: falling, ornaments: 30%, syncopation: 28%
+
+All MIDI files generated with unique variations!
+```
+
+### Enhanced Lead Features
+
+The lead melody includes:
+- **Passing tones** - Chromatic/scale notes connecting chord tones
+- **Neighbor tones** - Upper/lower ornamental notes
+- **Grace notes** - Quick notes before main notes
+- **Call & response** - Alternating question/answer phrases
+- **Octave jumps** - Dramatic leaps for trance energy
+- **Section-aware density** - Sparse in breakdowns, energetic in drops
+- **Syncopation** - Off-beat rhythms for groove
+
+### Custom MIDI Embedding
+
+After generating or modifying MIDI files, embed them into an existing project:
+
+```bash
+# Embed all MIDI from project's midi/ folder
+python embed_custom_midi.py
+
+# The script:
+# 1. Loads the .als file
+# 2. Reads all .mid files from midi/ folder
+# 3. Embeds them as clips split by section
+# 4. Saves as [ProjectName]_embedded.als
+```
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `generate_dynamic.py` | Dynamic MIDI generator with full randomization |
+| `generate_fminor.py` | F minor specific generation (sustained bass) |
+| `generate_enhanced_lead.py` | Enhanced lead with all melodic techniques |
+| `embed_custom_midi.py` | Embed custom MIDI into existing .als files |
+
+---
+
 ## Advanced Features
 
 ### Automation Curves
@@ -408,12 +492,63 @@ print(f"Genre: {profile.genre}/{profile.subgenre}")
 | `mix_templates.py` | EQ/compression per track type | `--mix-templates` |
 | `vst_preset_matcher.py` | VST preset suggestions | `--vst-presets` |
 
+### Dynamic Generation (NEW)
+| File | Purpose |
+|------|---------|
+| `generate_dynamic.py` | Dynamic MIDI generator - unique output each run |
+| `generate_fminor.py` | F minor generation with sustained bass |
+| `generate_enhanced_lead.py` | Enhanced lead with ornaments & techniques |
+| `embed_custom_midi.py` | Embed custom MIDI into existing .als files |
+
 ### Other
 | File | Purpose |
 |------|---------|
 | `reference_profile.py` | Reference track analysis & matching |
 | `automation_generator.py` | Automation curve generation |
 | `device_library.py` | Device preset management |
+
+---
+
+## Customization Workflow
+
+### Regenerate with Variations
+
+To create a new unique version of a track:
+
+```bash
+cd C:\claude-workspace\AbletonAIAnalysis\projects\ableton-generators
+
+# 1. Generate new MIDI (different each time)
+python generate_dynamic.py
+
+# 2. Embed into project
+python embed_custom_midi.py
+
+# 3. Copy to Music folder and open
+powershell -Command "Copy-Item 'D:\...\TEMPLATE\[Project]\[Project]_embedded.als' 'C:\Users\badmin\Music\[Project]\' -Force"
+```
+
+### Change Key
+
+Edit `generate_dynamic.py` or create a new generator:
+- Update `F_MINOR` scale array with new scale notes
+- Update `BASE_PROGRESSION` chord notes
+- Update `bass_roots` dictionary
+
+### Adjust Bass Style
+
+In `generate_dynamic.py`, the bass generates sustained notes (good for sidechained compression).
+- For rolling 16ths: Modify `generate_bass()` to add 16th note patterns
+- For octave movement: Increase octave variation probability
+
+### Adjust Lead Intensity
+
+In `generate_dynamic.py`, modify these ranges in `generate_lead()`:
+```python
+ornament_prob = random.uniform(0.1, 0.3)      # More/fewer ornaments
+octave_jump_prob = random.uniform(0.05, 0.15) # More/fewer jumps
+syncopation = random.uniform(0.1, 0.4)        # More/less off-beat
+```
 
 ---
 
@@ -424,6 +559,8 @@ print(f"Genre: {profile.genre}/{profile.subgenre}")
 3. **Output location is fixed** - All projects go to the TEMPLATE folder
 4. **MIDI is embedded** - With `--embed-midi`, user can hit play immediately (no dragging needed)
 5. **Clips are per-section** - With `--split-sections`, each section (Intro, Drop, etc.) is a separate clip
+6. **Dynamic generator for variation** - Use `generate_dynamic.py` for unique results each run
+7. **Sustained bass for sidechain** - Bass uses long notes; compressor creates the pump
 
 ## Troubleshooting
 

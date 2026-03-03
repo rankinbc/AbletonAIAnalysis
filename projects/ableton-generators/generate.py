@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Hybrid Melody Generation CLI (Phase 1, Step 1.7)
 
@@ -128,9 +128,9 @@ def print_summary(result: HybridResult, verbose: bool = False):
         print(f"  Log:        {result.log_path}")
 
     if verbose and len(result.all_candidates) > 1:
-        print(f"\n{'─' * 56}")
+        print(f"\n{'-' * 56}")
         print(f"  {'Source':<24} {'Score':>8}  {'Notes':>6}  {'Scale%':>7}")
-        print(f"{'─' * 56}")
+        print(f"{'-' * 56}")
         ranked = sorted(result.all_candidates,
                        key=lambda c: c.metrics.composite, reverse=True)
         for c in ranked:

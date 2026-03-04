@@ -167,31 +167,42 @@ def section_type(bar):
 # ============================================================================
 
 def generate_chords():
-    """Generate chords with random voicings."""
-    print("Generating dynamic chords...")
+    """Generate clean chords in octave 4-5, no timing variation."""
+    print("Generating clean chords (octave 4-5)...")
 
     mid = MidiFile(ticks_per_beat=ticks_per_beat)
     track = MidiTrack()
     mid.tracks.append(track)
     track.append(MetaMessage('set_tempo', tempo=tempo, time=0))
 
-    voicing_style = random.choice(['normal', 'spread', 'drop2', 'close'])
-    print(f"  Voicing style: {voicing_style}")
+    events = []
+    current_tick = 0
 
     for chord_name, notes, bars in BASE_PROGRESSION:
-        # Randomize voicing occasionally
-        if random.random() < 0.3:
-            style = random.choice(['normal', 'spread', 'drop2', 'close', 'high'])
-        else:
-            style = voicing_style
-
-        voiced_notes = randomize_voicing(notes, style)
+        # Shift notes up one octave to get into octave 4-5 range
+        chord_notes = [n + 12 for n in notes]
         duration = bars * ticks_per_bar - 10
+        vel = 80
 
-        for i, note in enumerate(voiced_notes):
-            track.append(Message('note_on', note=note, velocity=random.randint(70, 90), time=0))
-        for i, note in enumerate(voiced_notes):
-            track.append(Message('note_off', note=note, velocity=0, time=duration if i == 0 else 0))
+        # All notes start at exactly the same time
+        for note in chord_notes:
+            events.append((current_tick, 'on', note, vel))
+        # All notes end at exactly the same time
+        for note in chord_notes:
+            events.append((current_tick + duration, 'off', note, 0))
+
+        current_tick += bars * ticks_per_bar
+
+    # Sort and write - ensures clean timing
+    events.sort(key=lambda x: (x[0], 0 if x[1] == 'on' else 1))
+    last_tick = 0
+    for tick, evt, note, vel in events:
+        delta = tick - last_tick
+        if evt == 'on':
+            track.append(Message('note_on', note=note, velocity=vel, time=delta))
+        else:
+            track.append(Message('note_off', note=note, velocity=0, time=delta))
+        last_tick = tick
 
     mid.save(output_dir / "chords.mid")
     return mid
@@ -209,10 +220,11 @@ def generate_bass():
     mid.tracks.append(track)
     track.append(MetaMessage('set_tempo', tempo=tempo, time=0))
 
+    # Bass roots in Octave 2 (F2=41, C2=36, etc.)
     bass_roots = {
-        'Fm': 29, 'Db': 25, 'Ab': 32, 'Eb': 27, 'Cm': 24, 'Bb': 22, 'Bbm': 22,
-        'Gb': 30, 'Dbmaj7': 25, 'Abmaj7': 32, 'Eb7': 27, 'Fm7': 29, 'C': 24,
-        'Bbm7': 22, 'Gdim': 31, 'Ebsus4': 27
+        'Fm': 41, 'Db': 37, 'Ab': 44, 'Eb': 39, 'Cm': 36, 'Bb': 34, 'Bbm': 34,
+        'Gb': 42, 'Dbmaj7': 37, 'Abmaj7': 44, 'Eb7': 39, 'Fm7': 41, 'C': 36,
+        'Bbm7': 34, 'Gdim': 43, 'Ebsus4': 39
     }
 
     for chord_name, notes, bars in BASE_PROGRESSION:
